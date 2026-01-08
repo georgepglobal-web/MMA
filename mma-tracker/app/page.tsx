@@ -21,12 +21,12 @@ interface Session {
   type: string;
   level: string;
   points: number;
-  groupId: string; // Default group support
+  groupId: string;
 }
 
 interface Avatar {
   level: "Novice" | "Intermediate" | "Seasoned" | "Elite";
-  progress: number; // 0-100 (approximate, not exact percentage)
+  progress: number;
   cumulativePoints: number;
 }
 
@@ -34,6 +34,7 @@ interface MemberRanking {
   name: string;
   score: number;
   badges: string[];
+  isCurrentUser?: boolean;
 }
 
 // Session type options
@@ -76,11 +77,11 @@ const CLASS_LEVEL_MULTIPLIERS: Record<string, number> = {
 // Default group ID
 const DEFAULT_GROUP_ID = "default-group";
 
-// Sample group ranking
-const SAMPLE_GROUP: MemberRanking[] = [
-  { name: "Alice", score: 120, badges: ["Most Balanced"] },
-  { name: "Bob", score: 110, badges: ["Best Striker", "Best Grappler"] },
-  { name: "Charlie", score: 100, badges: [] },
+// Sample group members (for MVP context)
+const SAMPLE_GROUP_MEMBERS: Omit<MemberRanking, "score">[] = [
+  { name: "Alice", badges: ["Most Balanced"] },
+  { name: "Bob", badges: ["Best Striker", "Best Grappler"] },
+  { name: "Charlie", badges: [] },
 ];
 
 export default function Home() {
@@ -95,7 +96,6 @@ export default function Home() {
     // Check storage version and migrate if needed
     const storedVersion = localStorage.getItem(STORAGE_KEYS.VERSION);
     if (storedVersion !== STORAGE_VERSION) {
-      // Future: Add migration logic here
       localStorage.setItem(STORAGE_KEYS.VERSION, STORAGE_VERSION);
     }
 
@@ -120,23 +120,65 @@ export default function Home() {
         setSessions(migrated);
       } catch (e) {
         console.error("Error loading sessions:", e);
+        // Initialize empty array on error
+        setSessions([]);
+        localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify([]));
       }
+    } else {
+      // Initialize empty array if no sessions exist
+      setSessions([]);
+      localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify([]));
     }
   }, []);
 
   /**
-   * Recalculate avatar from sessions (fully derived)
+   * Calculate badges from session types
    */
-  const recalculateAvatarFromSessions = useCallback((allSessions: Session[]) => {
-    if (allSessions.length === 0) {
-      setAvatar(null);
-      return;
+  const calculateBadgesFromSessions = (allSessions: Session[]): string[] => {
+    const badges: string[] = [];
+    const typeCounts: Record<string, number> = {};
+
+    // Count sessions by type
+    allSessions.forEach((session) => {
+      typeCounts[session.type] = (typeCounts[session.type] || 0) + 1;
+    });
+
+    // Determine badges based on session distribution
+    const uniqueTypes = Object.keys(typeCounts).length;
+    const totalSessions = allSessions.length;
+
+    if (uniqueTypes >= 5 && totalSessions >= 10) {
+      badges.push("Most Balanced");
     }
 
-    // Calculate cumulative points from all sessions
-    const totalPoints = allSessions.reduce((sum, s) => sum + (s.points || 0), 0);
+    const strikingTypes = ["Boxing", "Muay Thai", "K1", "MMA"];
+    const grapplingTypes = ["BJJ", "Wrestling", "Judo", "Takedowns"];
+    
+    const strikingCount = strikingTypes.reduce((sum, type) => sum + (typeCounts[type] || 0), 0);
+    const grapplingCount = grapplingTypes.reduce((sum, type) => sum + (typeCounts[type] || 0), 0);
 
-    // Calculate level and progress
+    if (strikingCount >= 5 && strikingCount > grapplingCount) {
+      badges.push("Best Striker");
+    }
+
+    if (grapplingCount >= 5 && grapplingCount > strikingCount) {
+      badges.push("Best Grappler");
+    }
+
+    if (typeCounts["Wrestling"] >= 3) {
+      badges.push("Best Wrestler");
+    }
+
+    return badges;
+  };
+
+  /**
+   * Recalculate avatar from sessions (fully derived)
+   * Always creates a default "Novice" avatar if no sessions exist
+   */
+  const recalculateAvatarFromSessions = useCallback((allSessions: Session[]) => {
+    // Always create avatar - default to Novice if no sessions
+    const totalPoints = allSessions.reduce((sum, s) => sum + (s.points || 0), 0);
     const level = calculateLevelFromPoints(totalPoints);
     const progress = calculateProgressInLevel(totalPoints, level);
 
@@ -152,11 +194,9 @@ export default function Home() {
     recalculateAvatarFromSessions(sessions);
   }, [sessions, recalculateAvatarFromSessions]);
 
-  // Save sessions to localStorage
+  // Always persist sessions array (even if empty)
   useEffect(() => {
-    if (sessions.length > 0) {
-      localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
-    }
+    localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
   }, [sessions]);
 
   /**
@@ -265,66 +305,59 @@ export default function Home() {
       }
     };
 
+    // Avatar is always available (defaults to Novice)
+    if (!avatar) {
+      return null; // Should not happen, but handle gracefully
+    }
+
     return (
       <div className="min-h-[calc(100vh-4rem)] p-4 sm:p-8 bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 dark:from-black dark:via-purple-950 dark:to-black">
         <div className="max-w-4xl mx-auto">
           {/* Large Avatar Section - Center Stage */}
           <div className="flex flex-col items-center mb-12 mt-8 sm:mt-16">
-            {avatar ? (
-              <>
-                <div className="relative mb-8">
-                  {/* Glow Effect */}
-                  <div className={`absolute inset-0 rounded-xl bg-gradient-to-r ${getLevelColor(avatar.level)} blur-2xl opacity-60 animate-pulse -z-10`} style={{ width: "110%", height: "110%", top: "-5%", left: "-5%" }} />
-                  
-                  {/* Large Full Image Avatar */}
-                  <AvatarImage
-                    level={avatar.level}
-                    size="xl"
-                    showGlow={false}
-                    fullImage={true}
-                    className="mb-4"
-                  />
+            <div className="relative mb-8">
+              {/* Glow Effect */}
+              <div className={`absolute inset-0 rounded-xl bg-gradient-to-r ${getLevelColor(avatar.level)} blur-2xl opacity-60 animate-pulse -z-10`} style={{ width: "110%", height: "110%", top: "-5%", left: "-5%" }} />
+              
+              {/* Large Full Image Avatar */}
+              <AvatarImage
+                level={avatar.level}
+                size="xl"
+                showGlow={false}
+                fullImage={true}
+                className="mb-4"
+              />
 
-                  {/* Level Badge */}
-                  <div className={`absolute -bottom-4 left-1/2 transform -translate-x-1/2 px-6 py-2 rounded-full bg-gradient-to-r ${getLevelColor(avatar.level)} text-white text-sm font-bold shadow-lg border-2 border-white/30 whitespace-nowrap z-10`}>
-                    {avatar.level} Fighter
-                  </div>
-                </div>
-
-                {/* Stats */}
-                <div className="flex gap-6 mt-8 text-center">
-                  <div className="bg-white/10 backdrop-blur-sm rounded-lg px-4 py-2 border border-white/20 hover:bg-white/15 transition-colors duration-200">
-                    <div className="text-2xl font-bold text-white">{sessions.length}</div>
-                    <div className="text-xs text-white/70 uppercase tracking-wide">Sessions</div>
-                  </div>
-                  <div className="bg-white/10 backdrop-blur-sm rounded-lg px-4 py-2 border border-white/20 hover:bg-white/15 transition-colors duration-200">
-                    <div className="text-2xl font-bold text-white">{avatar.level}</div>
-                    <div className="text-xs text-white/70 uppercase tracking-wide">Level</div>
-                  </div>
-                </div>
-
-                {/* Progress Bar */}
-                <div className="w-full max-w-xs mt-6">
-                  <div className="flex justify-between text-xs text-white/80 mb-2">
-                    <span>Level Progress</span>
-                  </div>
-                  <div className="w-full h-3 bg-white/10 rounded-full overflow-hidden border border-white/20 backdrop-blur-sm shadow-inner">
-                    <div
-                      className={`h-full bg-gradient-to-r ${getLevelColor(avatar.level)} transition-all duration-700 ease-out rounded-full shadow-lg`}
-                      style={{ width: `${Math.round(avatar.progress / 25) * 25}%` }}
-                    />
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="text-center">
-                <div className="relative w-64 h-80 sm:w-80 sm:h-96 md:w-96 md:h-[28rem] rounded-xl bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 flex items-center justify-center text-white text-4xl sm:text-5xl font-bold shadow-2xl border-4 border-white/20 backdrop-blur-sm mb-8">
-                  FM
-                </div>
-                <h2 className="text-3xl sm:text-4xl font-bold text-white mb-4">Welcome to FightMate!</h2>
-                <p className="text-white/70 mb-6">Log your first session to create your fighter avatar</p>
+              {/* Level Badge */}
+              <div className={`absolute -bottom-4 left-1/2 transform -translate-x-1/2 px-6 py-2 rounded-full bg-gradient-to-r ${getLevelColor(avatar.level)} text-white text-sm font-bold shadow-lg border-2 border-white/30 whitespace-nowrap z-10`}>
+                {avatar.level} Fighter
               </div>
-            )}
+            </div>
+
+            {/* Stats */}
+            <div className="flex gap-6 mt-8 text-center">
+              <div className="bg-white/10 backdrop-blur-sm rounded-lg px-4 py-2 border border-white/20 hover:bg-white/15 transition-colors duration-200">
+                <div className="text-2xl font-bold text-white">{sessions.length}</div>
+                <div className="text-xs text-white/70 uppercase tracking-wide">Sessions</div>
+              </div>
+              <div className="bg-white/10 backdrop-blur-sm rounded-lg px-4 py-2 border border-white/20 hover:bg-white/15 transition-colors duration-200">
+                <div className="text-2xl font-bold text-white">{avatar.level}</div>
+                <div className="text-xs text-white/70 uppercase tracking-wide">Level</div>
+              </div>
+            </div>
+
+            {/* Progress Bar */}
+            <div className="w-full max-w-xs mt-6">
+              <div className="flex justify-between text-xs text-white/80 mb-2">
+                <span>Level Progress</span>
+              </div>
+              <div className="w-full h-3 bg-white/10 rounded-full overflow-hidden border border-white/20 backdrop-blur-sm shadow-inner">
+                <div
+                  className={`h-full bg-gradient-to-r ${getLevelColor(avatar.level)} transition-all duration-700 ease-out rounded-full shadow-lg`}
+                  style={{ width: `${Math.round(avatar.progress / 25) * 25}%` }}
+                />
+              </div>
+            </div>
           </div>
 
           {/* Action Buttons Grid */}
@@ -686,26 +719,9 @@ export default function Home() {
       }
     };
 
+    // Avatar is always available (defaults to Novice)
     if (!avatar) {
-      return (
-        <div className="min-h-[calc(100vh-4rem)] p-4 sm:p-8 bg-gradient-to-br from-slate-900 via-yellow-900 to-slate-900 dark:from-black dark:via-yellow-950 dark:to-black">
-          <div className="max-w-4xl mx-auto">
-            <div className="text-center mb-8 mt-8 sm:mt-12">
-              <h2 className="text-3xl sm:text-4xl font-bold text-white mb-2 drop-shadow-lg">Avatar Evolution</h2>
-              <p className="text-white/70 text-sm sm:text-base">Track your progress and unlock new levels</p>
-            </div>
-            <div className="bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 shadow-2xl p-12 text-center">
-              <div className="mb-4">
-                <svg className="w-16 h-16 mx-auto text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                </svg>
-              </div>
-              <p className="text-white/60 text-lg font-medium mb-2">No avatar created yet</p>
-              <p className="text-white/40 text-sm">Log your first training session to create your fighter avatar!</p>
-            </div>
-          </div>
-        </div>
-      );
+      return null; // Should not happen, but handle gracefully
     }
 
     const currentLevel = avatar.level;
@@ -722,9 +738,9 @@ export default function Home() {
             <p className="text-white/70 text-sm sm:text-base">Track your progress and unlock new levels</p>
           </div>
 
-          {/* All Four Avatars Grid - Large and Full Image */}
-          <div className="bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 shadow-2xl p-6 sm:p-10 mb-8">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 sm:gap-6">
+          {/* All Four Avatars Grid - Properly Spaced */}
+          <div className="bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 shadow-2xl p-8 sm:p-10 mb-8">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 sm:gap-8">
               {AVATAR_LEVELS.map((level) => {
                 const isCurrentLevel = level === currentLevel;
                 const isUnlocked = avatar.cumulativePoints >= LEVEL_THRESHOLDS[level].min;
@@ -736,23 +752,25 @@ export default function Home() {
                       isCurrentLevel ? "transform scale-105" : "hover:scale-102"
                     }`}
                   >
-                    <div className="relative mb-3">
+                    <div className="relative mb-4 w-full flex justify-center">
+                      {/* Glow Effect for Current Level - Properly Positioned */}
                       {isCurrentLevel && (
                         <div
-                          className={`absolute inset-0 rounded-xl bg-gradient-to-r ${getLevelColor(level)} blur-xl opacity-60 animate-pulse -z-10`}
+                          className={`absolute inset-0 rounded-xl bg-gradient-to-r ${getLevelColor(level)} blur-2xl opacity-60 animate-pulse -z-10`}
                           style={{
-                            width: "calc(100% + 1rem)",
-                            height: "calc(100% + 1rem)",
-                            top: "-0.5rem",
-                            left: "-0.5rem",
+                            width: "120%",
+                            height: "120%",
+                            top: "-10%",
+                            left: "-10%",
                           }}
                         />
                       )}
 
+                      {/* Border Highlight for Current Level - With Proper Spacing */}
                       <div
                         className={`rounded-xl transition-all duration-300 ${
                           isCurrentLevel
-                            ? `ring-4 ring-offset-2 ring-offset-slate-900 ${
+                            ? `ring-4 ring-offset-4 ring-offset-slate-900/50 ${
                                 level === "Novice"
                                   ? "ring-gray-400"
                                   : level === "Intermediate"
@@ -776,15 +794,18 @@ export default function Home() {
                       </div>
                     </div>
 
-                    <div className="text-center">
+                    {/* Level Name - With Proper Spacing */}
+                    <div className="text-center mt-2">
                       <p
-                        className={`font-semibold text-sm sm:text-base transition-colors duration-300 ${
+                        className={`font-semibold text-base sm:text-lg transition-colors duration-300 ${
                           isCurrentLevel ? "text-white" : isUnlocked ? "text-white/80" : "text-white/40"
                         }`}
                       >
                         {level}
                       </p>
-                      {isCurrentLevel && <p className="text-xs text-white/60 mt-1">Current</p>}
+                      {isCurrentLevel && (
+                        <p className="text-xs text-white/60 mt-1 font-medium">Current</p>
+                      )}
                     </div>
                   </div>
                 );
@@ -837,7 +858,28 @@ export default function Home() {
   };
 
   const GroupRankingPage = () => {
-    const sortedMembers = [...SAMPLE_GROUP].sort((a, b) => b.score - a.score);
+    // Calculate current user's ranking from actual session data
+    const currentUserScore = avatar?.cumulativePoints || 0;
+    const currentUserBadges = calculateBadgesFromSessions(sessions);
+    const currentUserName = "You"; // Could be customized later
+
+    // Create group rankings with current user + sample members
+    const allMembers: MemberRanking[] = [
+      {
+        name: currentUserName,
+        score: currentUserScore,
+        badges: currentUserBadges,
+        isCurrentUser: true,
+      },
+      // Sample members with scores higher/lower for context
+      ...SAMPLE_GROUP_MEMBERS.map((member, index) => ({
+        ...member,
+        score: currentUserScore + (10 - index * 5), // Sample scores relative to user
+      })),
+    ];
+
+    // Sort by score descending
+    const sortedMembers = [...allMembers].sort((a, b) => b.score - a.score);
 
     const getOrdinalRank = (index: number): string => {
       const rank = index + 1;
@@ -905,7 +947,11 @@ export default function Home() {
                   <div
                     key={member.name}
                     className={`px-4 sm:px-6 py-5 sm:py-6 transition-all duration-200 hover:bg-white/10 hover:shadow-md cursor-default rounded-lg ${
-                      index % 2 === 0 ? "bg-white/5" : "bg-white/[0.02]"
+                      member.isCurrentUser
+                        ? "bg-blue-500/20 border-l-4 border-blue-400"
+                        : index % 2 === 0
+                        ? "bg-white/5"
+                        : "bg-white/[0.02]"
                     }`}
                   >
                     <div className="flex items-center gap-4 sm:gap-6">
@@ -920,7 +966,12 @@ export default function Home() {
                       <div className="flex-1 min-w-0">
                         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
                           <div className="flex-1">
-                            <h3 className="text-white font-bold text-lg sm:text-xl mb-1 truncate">{member.name}</h3>
+                            <h3 className={`font-bold text-lg sm:text-xl mb-1 truncate ${member.isCurrentUser ? "text-blue-300" : "text-white"}`}>
+                              {member.name}
+                              {member.isCurrentUser && (
+                                <span className="ml-2 text-xs bg-blue-500/30 px-2 py-0.5 rounded-full">You</span>
+                              )}
+                            </h3>
                             <div className="flex items-center gap-2">
                               <span className="text-white/70 text-sm sm:text-base">{getOrdinalRank(index)}</span>
                             </div>
