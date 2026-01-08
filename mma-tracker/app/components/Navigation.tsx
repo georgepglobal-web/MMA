@@ -27,7 +27,7 @@ export default function Navigation() {
           {/* Logo/Brand */}
           <div className="flex items-center">
             <h1 className="text-xl font-bold text-black dark:text-white">
-              MMA Tracker
+              FightMate
             </h1>
           </div>
 

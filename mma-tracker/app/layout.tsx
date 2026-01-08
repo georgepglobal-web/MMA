@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "MMA Tracker",
-  description: "Track your MMA training sessions and progress",
+  title: "FightMate",
+  description: "Track your MMA training sessions and level up your fighter avatar",
 };
 
 export default function RootLayout({

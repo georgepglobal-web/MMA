@@ -10,9 +10,10 @@ import Image from "next/image";
  */
 interface AvatarImageProps {
   level: "Novice" | "Intermediate" | "Seasoned" | "Elite";
-  size?: "sm" | "md" | "lg";
+  size?: "sm" | "md" | "lg" | "xl";
   showGlow?: boolean;
   className?: string;
+  fullImage?: boolean; // If true, shows full image without circular mask
 }
 
 // Level-to-image mapping
@@ -24,16 +25,17 @@ const AVATAR_IMAGES: Record<AvatarImageProps["level"], string> = {
 };
 
 // Fallback placeholder if images don't exist
-const FallbackAvatar = ({ level, size }: { level: string; size: string }) => {
+const FallbackAvatar = ({ level, size, fullImage }: { level: string; size: string; fullImage?: boolean }) => {
   const sizeClasses = {
-    sm: "w-24 h-24 sm:w-32 sm:h-32",
-    md: "w-32 h-32 sm:w-40 sm:h-40",
-    lg: "w-48 h-48 sm:w-64 sm:h-64",
+    sm: "w-24 h-32 sm:w-32 sm:h-40",
+    md: "w-32 h-40 sm:w-40 sm:h-52",
+    lg: "w-48 h-64 sm:w-64 sm:h-80",
+    xl: "w-64 h-80 sm:w-80 sm:h-96 md:w-96 md:h-[28rem]",
   };
 
   return (
     <div
-      className={`${sizeClasses[size as keyof typeof sizeClasses]} rounded-full bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 flex items-center justify-center text-white text-2xl sm:text-3xl font-bold shadow-2xl border-4 border-white/20 backdrop-blur-sm`}
+      className={`${sizeClasses[size as keyof typeof sizeClasses]} ${fullImage ? "rounded-xl" : "rounded-full"} bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 flex items-center justify-center text-white text-2xl sm:text-3xl font-bold shadow-2xl border-4 border-white/20 backdrop-blur-sm`}
     >
       {level.substring(0, 2).toUpperCase()}
     </div>
@@ -45,6 +47,7 @@ export default function AvatarImage({
   size = "md",
   showGlow = true,
   className = "",
+  fullImage = false,
 }: AvatarImageProps) {
   const [imageError, setImageError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -65,22 +68,26 @@ export default function AvatarImage({
   }, [level]);
 
   const sizeClasses = {
-    sm: "w-24 h-24 sm:w-32 sm:h-32",
-    md: "w-32 h-32 sm:w-40 sm:h-40",
-    lg: "w-48 h-48 sm:w-64 sm:h-64",
+    sm: fullImage ? "w-24 h-32 sm:w-32 sm:h-40" : "w-24 h-24 sm:w-32 sm:h-32",
+    md: fullImage ? "w-32 h-40 sm:w-40 sm:h-52" : "w-32 h-32 sm:w-40 sm:h-40",
+    lg: fullImage ? "w-48 h-64 sm:w-64 sm:h-80" : "w-48 h-48 sm:w-64 sm:h-64",
+    xl: fullImage ? "w-64 h-80 sm:w-80 sm:h-96 md:w-96 md:h-[28rem]" : "w-64 h-64 sm:w-80 sm:h-80",
   };
 
   // Show fallback if image fails to load
   if (imageError) {
-    return <FallbackAvatar level={level} size={size} />;
+    return <FallbackAvatar level={level} size={size} fullImage={fullImage} />;
   }
+
+  const shapeClass = fullImage ? "rounded-xl" : "rounded-full";
+  const glowShape = fullImage ? "rounded-xl" : "rounded-full";
 
   return (
     <div className={`relative ${sizeClasses[size]} ${className}`}>
       {/* Glow effect */}
       {showGlow && (
         <div
-          className={`absolute inset-0 rounded-full bg-gradient-to-r ${
+          className={`absolute inset-0 ${glowShape} bg-gradient-to-r ${
             level === "Novice"
               ? "from-gray-400 to-gray-600"
               : level === "Intermediate"
@@ -94,7 +101,7 @@ export default function AvatarImage({
 
       {/* Avatar Image with smooth transition */}
       <div
-        className={`relative w-full h-full rounded-full overflow-hidden border-4 border-white/20 shadow-2xl backdrop-blur-sm transition-all duration-200 ease-in-out ${
+        className={`relative w-full h-full ${shapeClass} overflow-hidden border-4 border-white/20 shadow-2xl backdrop-blur-sm transition-all duration-200 ease-in-out ${
           isLoading ? "opacity-0 scale-95" : "opacity-100 scale-100"
         }`}
       >
