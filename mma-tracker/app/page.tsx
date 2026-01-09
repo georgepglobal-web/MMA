@@ -12,12 +12,13 @@ const STORAGE_KEYS = {
   USER_ID: "fightmate-user-id",
   SESSIONS: "fightmate-sessions",
   AVATAR: "fightmate-avatar",
+  GROUP_MEMBERS: "fightmate-group-members",
 } as const;
 
 // Types
 interface Session {
   id: number;
-  date: string;
+  date: string; // ISO format: YYYY-MM-DD
   type: string;
   level: string;
   points: number;
@@ -31,6 +32,7 @@ interface Avatar {
 }
 
 interface MemberRanking {
+  userId: string;
   name: string;
   score: number;
   badges: string[];
@@ -77,12 +79,30 @@ const CLASS_LEVEL_MULTIPLIERS: Record<string, number> = {
 // Default group ID
 const DEFAULT_GROUP_ID = "default-group";
 
-// Sample group members (for MVP context)
-const SAMPLE_GROUP_MEMBERS: Omit<MemberRanking, "score">[] = [
-  { name: "Alice", badges: ["Most Balanced"] },
-  { name: "Bob", badges: ["Best Striker", "Best Grappler"] },
-  { name: "Charlie", badges: [] },
-];
+/**
+ * Normalize date to ISO format (YYYY-MM-DD)
+ * Handles various date formats and ensures consistent storage
+ */
+const normalizeDateToISO = (dateString: string): string => {
+  if (!dateString) return "";
+  
+  try {
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) {
+      // If invalid, try parsing as-is (might already be ISO)
+      return dateString;
+    }
+    
+    // Convert to YYYY-MM-DD format
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  } catch (e) {
+    // Fallback: return as-is if it's already in ISO format
+    return dateString;
+  }
+};
 
 export default function Home() {
   const { currentPage: page, setCurrentPage: setPage } = usePage();
@@ -90,8 +110,9 @@ export default function Home() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [avatar, setAvatar] = useState<Avatar | null>(null);
   const [userId, setUserId] = useState<string>("");
+  const [groupMembers, setGroupMembers] = useState<MemberRanking[]>([]);
 
-  // Initialize user ID and localStorage versioning
+  // Initialize user ID, localStorage versioning, and group members
   useEffect(() => {
     // Check storage version and migrate if needed
     const storedVersion = localStorage.getItem(STORAGE_KEYS.VERSION);
@@ -112,15 +133,17 @@ export default function Home() {
     if (savedSessions) {
       try {
         const parsed = JSON.parse(savedSessions);
-        // Migrate old sessions to include groupId if missing
+        // Migrate old sessions to include groupId if missing and normalize dates
         const migrated = parsed.map((s: Session) => ({
           ...s,
+          date: normalizeDateToISO(s.date),
           groupId: s.groupId || DEFAULT_GROUP_ID,
         }));
         setSessions(migrated);
+        // Ensure empty array is persisted
+        localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(migrated));
       } catch (e) {
         console.error("Error loading sessions:", e);
-        // Initialize empty array on error
         setSessions([]);
         localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify([]));
       }
@@ -129,6 +152,36 @@ export default function Home() {
       setSessions([]);
       localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify([]));
     }
+
+    // Load group members
+    const savedGroupMembers = localStorage.getItem(STORAGE_KEYS.GROUP_MEMBERS);
+    if (savedGroupMembers) {
+      try {
+        const parsed = JSON.parse(savedGroupMembers);
+        setGroupMembers(parsed);
+      } catch (e) {
+        console.error("Error loading group members:", e);
+        setGroupMembers([]);
+      }
+    }
+
+    // Add current user to group members if not already present
+    setGroupMembers((prev) => {
+      const userExists = prev.some((m) => m.userId === storedUserId);
+      if (!userExists) {
+        const newMember: MemberRanking = {
+          userId: storedUserId,
+          name: "You",
+          score: 0,
+          badges: [],
+          isCurrentUser: true,
+        };
+        const updated = [...prev, newMember];
+        localStorage.setItem(STORAGE_KEYS.GROUP_MEMBERS, JSON.stringify(updated));
+        return updated;
+      }
+      return prev;
+    });
   }, []);
 
   /**
@@ -199,6 +252,40 @@ export default function Home() {
     localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
   }, [sessions]);
 
+  // Update current user's data in group members when sessions/avatar change
+  useEffect(() => {
+    if (!userId) return;
+
+    setGroupMembers((prev) => {
+      const updated = prev.map((member) => {
+        if (member.userId === userId) {
+          return {
+            ...member,
+            score: avatar?.cumulativePoints || 0,
+            badges: calculateBadgesFromSessions(sessions),
+            isCurrentUser: true,
+          };
+        }
+        return member;
+      });
+
+      // Ensure current user exists (should already exist from initialization, but safety check)
+      const userExists = updated.some((m) => m.userId === userId);
+      if (!userExists) {
+        updated.push({
+          userId,
+          name: "You",
+          score: avatar?.cumulativePoints || 0,
+          badges: calculateBadgesFromSessions(sessions),
+          isCurrentUser: true,
+        });
+      }
+
+      localStorage.setItem(STORAGE_KEYS.GROUP_MEMBERS, JSON.stringify(updated));
+      return updated;
+    });
+  }, [userId, avatar?.cumulativePoints, sessions]);
+
   /**
    * Calculate weekly diversity bonus
    */
@@ -266,11 +353,15 @@ export default function Home() {
    * Add a new training session
    */
   const addSession = (session: Omit<Session, "id" | "points" | "groupId">) => {
-    const diversityBonus = calculateWeeklyDiversityBonus(sessions, session);
+    // Normalize date to ISO format
+    const normalizedDate = normalizeDateToISO(session.date);
+    
+    const diversityBonus = calculateWeeklyDiversityBonus(sessions, { ...session, date: normalizedDate });
     const sessionPoints = calculateSessionPoints(session.level, diversityBonus);
 
     const newSession: Session = {
       ...session,
+      date: normalizedDate,
       id: Date.now(),
       points: sessionPoints,
       groupId: DEFAULT_GROUP_ID,
@@ -430,11 +521,21 @@ export default function Home() {
         alert("Please select a date");
         return;
       }
-      addSession({ date, type, level });
+      
+      // Normalize date before submitting
+      const normalizedDate = normalizeDateToISO(date);
+      addSession({ date: normalizedDate, type, level });
       setDate("");
       setType(SESSION_TYPES[0]);
       setLevel(CLASS_LEVELS[0]);
       setPage("history");
+    };
+
+    const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const inputValue = e.target.value;
+      // Normalize the date value to ensure ISO format
+      const normalized = normalizeDateToISO(inputValue);
+      setDate(normalized);
     };
 
     return (
@@ -460,7 +561,7 @@ export default function Home() {
                     type="date"
                     id="date"
                     value={date}
-                    onChange={(e) => setDate(e.target.value)}
+                    onChange={handleDateChange}
                     required
                     className="w-full px-4 py-3 bg-white/10 border border-white/30 rounded-xl text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 backdrop-blur-sm"
                     style={{ colorScheme: "dark" }}
@@ -552,7 +653,13 @@ export default function Home() {
 
   const HistoryPage = () => {
     const formatDate = (dateString: string) => {
-      const date = new Date(dateString);
+      // Ensure date is in ISO format for parsing
+      const normalizedDate = normalizeDateToISO(dateString);
+      const date = new Date(normalizedDate);
+      if (isNaN(date.getTime())) {
+        // Fallback to displaying the original string if invalid
+        return dateString;
+      }
       return date.toLocaleDateString("en-US", {
         year: "numeric",
         month: "short",
@@ -738,9 +845,9 @@ export default function Home() {
             <p className="text-white/70 text-sm sm:text-base">Track your progress and unlock new levels</p>
           </div>
 
-          {/* All Four Avatars Grid - Properly Spaced */}
-          <div className="bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 shadow-2xl p-8 sm:p-10 mb-8">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 sm:gap-8">
+          {/* All Four Avatars Grid - Mobile Constrained, Desktop Unchanged */}
+          <div className="bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 shadow-2xl p-4 sm:p-8 md:p-10 mb-8">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-6 md:gap-8">
               {AVATAR_LEVELS.map((level) => {
                 const isCurrentLevel = level === currentLevel;
                 const isUnlocked = avatar.cumulativePoints >= LEVEL_THRESHOLDS[level].min;
@@ -752,52 +859,56 @@ export default function Home() {
                       isCurrentLevel ? "transform scale-105" : "hover:scale-102"
                     }`}
                   >
-                    <div className="relative mb-4 w-full flex justify-center">
-                      {/* Glow Effect for Current Level - Properly Positioned */}
+                    {/* Bounded Container for Mobile - Prevents Overflow */}
+                    <div className="relative mb-3 sm:mb-4 w-full max-w-[140px] sm:max-w-none flex justify-center overflow-hidden">
+                      {/* Glow Effect - Constrained on Mobile */}
                       {isCurrentLevel && (
                         <div
-                          className={`absolute inset-0 rounded-xl bg-gradient-to-r ${getLevelColor(level)} blur-2xl opacity-60 animate-pulse -z-10`}
+                          className={`absolute inset-0 rounded-xl bg-gradient-to-r ${getLevelColor(level)} blur-xl sm:blur-2xl opacity-60 animate-pulse -z-10`}
                           style={{
-                            width: "120%",
-                            height: "120%",
-                            top: "-10%",
-                            left: "-10%",
+                            width: "100%",
+                            height: "100%",
+                            top: "0%",
+                            left: "0%",
                           }}
                         />
                       )}
 
-                      {/* Border Highlight for Current Level - With Proper Spacing */}
-                      <div
-                        className={`rounded-xl transition-all duration-300 ${
-                          isCurrentLevel
-                            ? `ring-4 ring-offset-4 ring-offset-slate-900/50 ${
-                                level === "Novice"
-                                  ? "ring-gray-400"
-                                  : level === "Intermediate"
-                                  ? "ring-green-400"
-                                  : level === "Seasoned"
-                                  ? "ring-blue-400"
-                                  : "ring-purple-400"
-                              } shadow-2xl`
-                            : isUnlocked
-                            ? "ring-2 ring-white/20"
-                            : "ring-2 ring-white/10 opacity-50"
-                        }`}
-                      >
-                        <AvatarImage
-                          level={level}
-                          size="lg"
-                          showGlow={false}
-                          fullImage={true}
-                          className={!isUnlocked ? "opacity-40 grayscale" : ""}
-                        />
+                      {/* Avatar Container with Proper Spacing */}
+                      <div className="relative w-full flex justify-center">
+                        {/* Border Highlight - Responsive Ring Size */}
+                        <div
+                          className={`rounded-xl transition-all duration-300 ${
+                            isCurrentLevel
+                              ? `ring-2 sm:ring-4 ring-offset-2 sm:ring-offset-4 ring-offset-slate-900/50 ${
+                                  level === "Novice"
+                                    ? "ring-gray-400"
+                                    : level === "Intermediate"
+                                    ? "ring-green-400"
+                                    : level === "Seasoned"
+                                    ? "ring-blue-400"
+                                    : "ring-purple-400"
+                                } shadow-xl sm:shadow-2xl`
+                              : isUnlocked
+                              ? "ring-1 sm:ring-2 ring-white/20"
+                              : "ring-1 sm:ring-2 ring-white/10 opacity-50"
+                          }`}
+                        >
+                          <AvatarImage
+                            level={level}
+                            size="lg"
+                            showGlow={false}
+                            fullImage={true}
+                            className={`max-w-full h-auto ${!isUnlocked ? "opacity-40 grayscale" : ""}`}
+                          />
+                        </div>
                       </div>
                     </div>
 
-                    {/* Level Name - With Proper Spacing */}
-                    <div className="text-center mt-2">
+                    {/* Level Name - Proper Spacing */}
+                    <div className="text-center mt-1 sm:mt-2 w-full">
                       <p
-                        className={`font-semibold text-base sm:text-lg transition-colors duration-300 ${
+                        className={`font-semibold text-xs sm:text-base md:text-lg transition-colors duration-300 ${
                           isCurrentLevel ? "text-white" : isUnlocked ? "text-white/80" : "text-white/40"
                         }`}
                       >
@@ -858,27 +969,25 @@ export default function Home() {
   };
 
   const GroupRankingPage = () => {
-    // Calculate current user's ranking from actual session data
+    // Use actual group members from localStorage (no mock data)
+    // Calculate current user's data from sessions
     const currentUserScore = avatar?.cumulativePoints || 0;
     const currentUserBadges = calculateBadgesFromSessions(sessions);
-    const currentUserName = "You"; // Could be customized later
 
-    // Create group rankings with current user + sample members
-    const allMembers: MemberRanking[] = [
-      {
-        name: currentUserName,
-        score: currentUserScore,
-        badges: currentUserBadges,
-        isCurrentUser: true,
-      },
-      // Sample members with scores higher/lower for context
-      ...SAMPLE_GROUP_MEMBERS.map((member, index) => ({
-        ...member,
-        score: currentUserScore + (10 - index * 5), // Sample scores relative to user
-      })),
-    ];
+    // Update group members to reflect current user's actual data
+    const allMembers: MemberRanking[] = groupMembers.map((member) => {
+      if (member.userId === userId) {
+        return {
+          ...member,
+          score: currentUserScore,
+          badges: currentUserBadges,
+          isCurrentUser: true,
+        };
+      }
+      return member;
+    });
 
-    // Sort by score descending
+    // Sort by score descending (includes zero-point users)
     const sortedMembers = [...allMembers].sort((a, b) => b.score - a.score);
 
     const getOrdinalRank = (index: number): string => {
@@ -945,7 +1054,7 @@ export default function Home() {
               <div className="divide-y divide-white/10">
                 {sortedMembers.map((member, index) => (
                   <div
-                    key={member.name}
+                    key={member.userId}
                     className={`px-4 sm:px-6 py-5 sm:py-6 transition-all duration-200 hover:bg-white/10 hover:shadow-md cursor-default rounded-lg ${
                       member.isCurrentUser
                         ? "bg-blue-500/20 border-l-4 border-blue-400"
@@ -987,7 +1096,7 @@ export default function Home() {
                                   <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
                                     <path
                                       fillRule="evenodd"
-                                      d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                                      d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.945-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
                                       clipRule="evenodd"
                                     />
                                   </svg>
