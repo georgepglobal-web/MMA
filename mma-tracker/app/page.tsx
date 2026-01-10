@@ -1,23 +1,24 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { usePage } from "./contexts/PageContext";
 import AvatarImage from "./components/AvatarImage";
 import OnboardingModal from "./components/OnboardingModal";
+import { supabase, type GroupMember } from "../lib/supabase";
 
 // LocalStorage schema version
 const STORAGE_VERSION = "1.0.0";
 const STORAGE_KEYS = {
   VERSION: "fightmate-storage-version",
   USER_ID: "fightmate-user-id",
+  USERNAME: "fightmate-username",
   SESSIONS: "fightmate-sessions",
   AVATAR: "fightmate-avatar",
-  GROUP_MEMBERS: "fightmate-group-members",
 } as const;
 
 // Types
 interface Session {
-  id: number;
+  id: string; // Changed to string, using crypto.randomUUID()
   date: string; // ISO format: YYYY-MM-DD
   type: string;
   level: string;
@@ -87,22 +88,38 @@ const normalizeDateToISO = (dateString: string): string => {
   if (!dateString) return "";
   
   try {
-    const date = new Date(dateString);
-    if (isNaN(date.getTime())) {
-      // If invalid, try parsing as-is (might already be ISO)
+    // Parse as UTC to avoid timezone issues
+    const [year, month, day] = dateString.split("-");
+    if (year && month && day && year.length === 4 && month.length === 2 && day.length === 2) {
+      // Already in ISO format
       return dateString;
     }
     
-    // Convert to YYYY-MM-DD format
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
+    // Try parsing as Date (but we'll extract components as UTC)
+    const date = new Date(dateString + "T00:00:00Z"); // Force UTC
+    if (isNaN(date.getTime())) {
+      return dateString;
+    }
+    
+    // Convert to YYYY-MM-DD format using UTC
+    const yearStr = String(date.getUTCFullYear());
+    const monthStr = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const dayStr = String(date.getUTCDate()).padStart(2, "0");
+    return `${yearStr}-${monthStr}-${dayStr}`;
   } catch (e) {
     // Fallback: return as-is if it's already in ISO format
     return dateString;
   }
 };
+
+/**
+ * Parse date as UTC (YYYY-MM-DD format)
+ */
+const parseDateUTC = (dateString: string): Date => {
+  const [year, month, day] = dateString.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
+};
+
 
 export default function Home() {
   const { currentPage: page, setCurrentPage: setPage } = usePage();
@@ -110,9 +127,10 @@ export default function Home() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [avatar, setAvatar] = useState<Avatar | null>(null);
   const [userId, setUserId] = useState<string>("");
+  const [username, setUsername] = useState<string | null>(null);
   const [groupMembers, setGroupMembers] = useState<MemberRanking[]>([]);
 
-  // Initialize user ID, localStorage versioning, and group members
+  // Initialize user ID, localStorage versioning, and initialize user in Supabase
   useEffect(() => {
     // Check storage version and migrate if needed
     const storedVersion = localStorage.getItem(STORAGE_KEYS.VERSION);
@@ -128,19 +146,25 @@ export default function Home() {
     }
     setUserId(storedUserId);
 
-    // Load sessions with migration for old format
+    // Load username from localStorage as fallback (will be synced from Supabase)
+    const storedUsername = localStorage.getItem(STORAGE_KEYS.USERNAME);
+    if (storedUsername) {
+      setUsername(storedUsername);
+    }
+
+    // Load sessions with migration for old format (convert id from number to string)
     const savedSessions = localStorage.getItem(STORAGE_KEYS.SESSIONS);
     if (savedSessions) {
       try {
         const parsed = JSON.parse(savedSessions);
-        // Migrate old sessions to include groupId if missing and normalize dates
-        const migrated = parsed.map((s: Session) => ({
+        // Migrate old sessions: convert id to string, normalize dates, ensure groupId
+        const migrated = parsed.map((s: any) => ({
           ...s,
+          id: typeof s.id === "number" ? String(s.id) : (s.id || crypto.randomUUID()),
           date: normalizeDateToISO(s.date),
           groupId: s.groupId || DEFAULT_GROUP_ID,
         }));
         setSessions(migrated);
-        // Ensure empty array is persisted
         localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(migrated));
       } catch (e) {
         console.error("Error loading sessions:", e);
@@ -148,55 +172,142 @@ export default function Home() {
         localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify([]));
       }
     } else {
-      // Initialize empty array if no sessions exist
       setSessions([]);
       localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify([]));
     }
-
-    // Load group members
-    const savedGroupMembers = localStorage.getItem(STORAGE_KEYS.GROUP_MEMBERS);
-    if (savedGroupMembers) {
-      try {
-        const parsed = JSON.parse(savedGroupMembers);
-        setGroupMembers(parsed);
-      } catch (e) {
-        console.error("Error loading group members:", e);
-        setGroupMembers([]);
-      }
-    }
-
-    // Add current user to group members if not already present
-    setGroupMembers((prev) => {
-      const userExists = prev.some((m) => m.userId === storedUserId);
-      if (!userExists) {
-        const newMember: MemberRanking = {
-          userId: storedUserId,
-          name: "You",
-          score: 0,
-          badges: [],
-          isCurrentUser: true,
-        };
-        const updated = [...prev, newMember];
-        localStorage.setItem(STORAGE_KEYS.GROUP_MEMBERS, JSON.stringify(updated));
-        return updated;
-      }
-      return prev;
-    });
   }, []);
+
+  /**
+   * Initialize user in Supabase (check if exists, insert if not)
+   */
+  const initializeUserInSupabase = useCallback(async (userId: string) => {
+    if (!userId) return;
+
+    try {
+      // Check if user exists
+      const { data: existingUser, error: fetchError } = await supabase
+        .from("group_members")
+        .select("username")
+        .eq("user_id", userId)
+        .eq("group_id", DEFAULT_GROUP_ID)
+        .single();
+
+      if (fetchError && fetchError.code !== "PGRST116") {
+        // PGRST116 = no rows returned, which is fine (user doesn't exist)
+        console.error("Error checking user in Supabase:", fetchError);
+        return;
+      }
+
+      // If user doesn't exist, insert new row
+      if (!existingUser) {
+        const { error: insertError } = await supabase
+          .from("group_members")
+          .insert({
+            user_id: userId,
+            group_id: DEFAULT_GROUP_ID,
+            username: null,
+            score: 0,
+            badges: [],
+            updated_at: new Date().toISOString(),
+          });
+
+        if (insertError) {
+          console.error("Error initializing user in Supabase:", insertError);
+        }
+      } else {
+        // User exists - sync username from Supabase
+        if (existingUser.username) {
+          setUsername(existingUser.username);
+          localStorage.setItem(STORAGE_KEYS.USERNAME, existingUser.username);
+        }
+      }
+    } catch (e) {
+      console.error("Error initializing user in Supabase:", e);
+    }
+  }, []);
+
+  /**
+   * Upsert current user to Supabase group members (with debouncing)
+   */
+  const upsertCurrentUserToSupabase = useCallback(async (userScore: number, userBadges: string[], userUsername: string | null) => {
+    if (!userId) return;
+
+    try {
+      const { error } = await supabase
+        .from("group_members")
+        .upsert(
+          {
+            user_id: userId,
+            group_id: DEFAULT_GROUP_ID,
+            username: userUsername,
+            score: userScore,
+            badges: userBadges,
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: "user_id,group_id",
+          }
+        );
+
+      if (error) {
+        console.error("Error upserting user to Supabase:", error);
+      }
+    } catch (e) {
+      console.error("Error upserting user to Supabase:", e);
+    }
+  }, [userId]);
+
+  /**
+   * Fetch group members from Supabase
+   */
+  const fetchGroupMembersFromSupabase = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from("group_members")
+        .select("*")
+        .eq("group_id", DEFAULT_GROUP_ID)
+        .order("score", { ascending: false });
+
+      if (error) {
+        console.error("Error fetching group members:", error);
+        return;
+      }
+
+      if (data) {
+        const members: MemberRanking[] = data.map((member: GroupMember) => ({
+          userId: member.user_id,
+          name: member.username || (member.user_id === userId ? "You" : "Anonymous Fighter"),
+          score: member.score || 0,
+          badges: member.badges || [],
+          isCurrentUser: member.user_id === userId,
+        }));
+        setGroupMembers(members);
+      }
+    } catch (e) {
+      console.error("Error fetching group members:", e);
+    }
+  }, [userId]);
+
+  // Initialize user in Supabase and fetch group members on mount
+  useEffect(() => {
+    if (userId) {
+      initializeUserInSupabase(userId).then(() => {
+        fetchGroupMembersFromSupabase();
+      });
+    }
+  }, [userId, initializeUserInSupabase, fetchGroupMembersFromSupabase]);
 
   /**
    * Calculate badges from session types
    */
-  const calculateBadgesFromSessions = (allSessions: Session[]): string[] => {
+  const calculateBadgesFromSessions = useCallback((allSessions: Session[]): string[] => {
     const badges: string[] = [];
     const typeCounts: Record<string, number> = {};
 
-    // Count sessions by type
     allSessions.forEach((session) => {
       typeCounts[session.type] = (typeCounts[session.type] || 0) + 1;
     });
 
-    // Determine badges based on session distribution
     const uniqueTypes = Object.keys(typeCounts).length;
     const totalSessions = allSessions.length;
 
@@ -223,14 +334,13 @@ export default function Home() {
     }
 
     return badges;
-  };
+  }, []);
 
   /**
    * Recalculate avatar from sessions (fully derived)
    * Always creates a default "Novice" avatar if no sessions exist
    */
   const recalculateAvatarFromSessions = useCallback((allSessions: Session[]) => {
-    // Always create avatar - default to Novice if no sessions
     const totalPoints = allSessions.reduce((sum, s) => sum + (s.points || 0), 0);
     const level = calculateLevelFromPoints(totalPoints);
     const progress = calculateProgressInLevel(totalPoints, level);
@@ -252,58 +362,58 @@ export default function Home() {
     localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
   }, [sessions]);
 
-  // Update current user's data in group members when sessions/avatar change
+  // Memoize current user badges and score
+  const currentUserBadges = useMemo(() => calculateBadgesFromSessions(sessions), [sessions, calculateBadgesFromSessions]);
+  const currentUserScore = useMemo(() => avatar?.cumulativePoints || 0, [avatar?.cumulativePoints]);
+
+  // Debounce timer for Supabase writes
+  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Upsert current user to Supabase when score/badges change (debounced)
   useEffect(() => {
     if (!userId) return;
 
-    setGroupMembers((prev) => {
-      const updated = prev.map((member) => {
-        if (member.userId === userId) {
-          return {
-            ...member,
-            score: avatar?.cumulativePoints || 0,
-            badges: calculateBadgesFromSessions(sessions),
-            isCurrentUser: true,
-          };
-        }
-        return member;
-      });
+    // Clear existing timeout
+    if (syncTimeoutRef.current) {
+      clearTimeout(syncTimeoutRef.current);
+    }
 
-      // Ensure current user exists (should already exist from initialization, but safety check)
-      const userExists = updated.some((m) => m.userId === userId);
-      if (!userExists) {
-        updated.push({
-          userId,
-          name: "You",
-          score: avatar?.cumulativePoints || 0,
-          badges: calculateBadgesFromSessions(sessions),
-          isCurrentUser: true,
-        });
+    // Debounce Supabase writes (500ms delay)
+    syncTimeoutRef.current = setTimeout(async () => {
+      await upsertCurrentUserToSupabase(currentUserScore, currentUserBadges, username);
+      // Refresh group members after upsert
+      fetchGroupMembersFromSupabase();
+    }, 500);
+
+    return () => {
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
       }
-
-      localStorage.setItem(STORAGE_KEYS.GROUP_MEMBERS, JSON.stringify(updated));
-      return updated;
-    });
-  }, [userId, avatar?.cumulativePoints, sessions]);
+    };
+  }, [userId, username, currentUserScore, currentUserBadges, upsertCurrentUserToSupabase, fetchGroupMembersFromSupabase]);
 
   /**
-   * Calculate weekly diversity bonus
+   * Calculate weekly diversity bonus using UTC dates
    */
   const calculateWeeklyDiversityBonus = (existingSessions: Session[], newSession: Omit<Session, "id" | "points" | "groupId">): number => {
-    const sessionDate = new Date(newSession.date);
-    const weekStart = new Date(sessionDate);
-    weekStart.setDate(sessionDate.getDate() - sessionDate.getDay());
-    weekStart.setHours(0, 0, 0, 0);
+    // Parse dates as UTC to avoid timezone issues
+    const sessionDate = parseDateUTC(newSession.date);
+    const weekStart = new Date(Date.UTC(
+      sessionDate.getUTCFullYear(),
+      sessionDate.getUTCMonth(),
+      sessionDate.getUTCDate() - sessionDate.getUTCDay()
+    ));
+    weekStart.setUTCHours(0, 0, 0, 0);
 
     const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 7);
+    weekEnd.setUTCDate(weekStart.getUTCDate() + 7);
 
     const weekSessions = [
       ...existingSessions.filter((s) => {
-        const sDate = new Date(s.date);
+        const sDate = parseDateUTC(s.date);
         return sDate >= weekStart && sDate < weekEnd;
       }),
-      newSession as Session,
+      { ...newSession, date: newSession.date } as Session,
     ];
 
     const uniqueTypes = new Set(weekSessions.map((s) => s.type));
@@ -334,7 +444,7 @@ export default function Home() {
   };
 
   /**
-   * Calculate progress within level
+   * Calculate progress within level (single rounding to 25% steps)
    */
   const calculateProgressInLevel = (points: number, level: Avatar["level"]): number => {
     const threshold = LEVEL_THRESHOLDS[level];
@@ -345,7 +455,9 @@ export default function Home() {
     }
 
     const pointsInLevel = Math.max(0, points - threshold.min);
-    const rawProgress = Math.min(100, Math.round((pointsInLevel / range) * 100));
+    // Calculate raw progress (0-100)
+    const rawProgress = Math.min(100, (pointsInLevel / range) * 100);
+    // Round to 25% steps (0, 25, 50, 75, 100) - single rounding only
     return Math.round(rawProgress / 25) * 25;
   };
 
@@ -353,16 +465,14 @@ export default function Home() {
    * Add a new training session
    */
   const addSession = (session: Omit<Session, "id" | "points" | "groupId">) => {
-    // Normalize date to ISO format
     const normalizedDate = normalizeDateToISO(session.date);
-    
     const diversityBonus = calculateWeeklyDiversityBonus(sessions, { ...session, date: normalizedDate });
     const sessionPoints = calculateSessionPoints(session.level, diversityBonus);
 
     const newSession: Session = {
       ...session,
       date: normalizedDate,
-      id: Date.now(),
+      id: crypto.randomUUID(), // Use crypto.randomUUID() instead of Date.now()
       points: sessionPoints,
       groupId: DEFAULT_GROUP_ID,
     };
@@ -373,11 +483,30 @@ export default function Home() {
   /**
    * Delete a session and recalculate avatar
    */
-  const deleteSession = (sessionId: number) => {
+  const deleteSession = (sessionId: string) => {
     if (confirm("Are you sure you want to delete this session?")) {
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
     }
   };
+
+  /**
+   * Handle username set from onboarding modal
+   */
+  const handleUsernameSet = useCallback(async (newUsername: string) => {
+    if (!newUsername || !userId) return;
+
+    setUsername(newUsername);
+    localStorage.setItem(STORAGE_KEYS.USERNAME, newUsername);
+
+    // Immediately sync username to Supabase
+    try {
+      await upsertCurrentUserToSupabase(currentUserScore, currentUserBadges, newUsername);
+      // Refresh group members after username update
+      fetchGroupMembersFromSupabase();
+    } catch (e) {
+      console.error("Error updating username in Supabase:", e);
+    }
+  }, [userId, currentUserScore, currentUserBadges, upsertCurrentUserToSupabase, fetchGroupMembersFromSupabase]);
 
   // Components
   const HomePage = () => {
@@ -396,21 +525,17 @@ export default function Home() {
       }
     };
 
-    // Avatar is always available (defaults to Novice)
     if (!avatar) {
-      return null; // Should not happen, but handle gracefully
+      return null;
     }
 
     return (
       <div className="min-h-[calc(100vh-4rem)] p-4 sm:p-8 bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 dark:from-black dark:via-purple-950 dark:to-black">
         <div className="max-w-4xl mx-auto">
-          {/* Large Avatar Section - Center Stage */}
           <div className="flex flex-col items-center mb-12 mt-8 sm:mt-16">
             <div className="relative mb-8">
-              {/* Glow Effect */}
               <div className={`absolute inset-0 rounded-xl bg-gradient-to-r ${getLevelColor(avatar.level)} blur-2xl opacity-60 animate-pulse -z-10`} style={{ width: "110%", height: "110%", top: "-5%", left: "-5%" }} />
               
-              {/* Large Full Image Avatar */}
               <AvatarImage
                 level={avatar.level}
                 size="xl"
@@ -419,13 +544,11 @@ export default function Home() {
                 className="mb-4"
               />
 
-              {/* Level Badge */}
               <div className={`absolute -bottom-4 left-1/2 transform -translate-x-1/2 px-6 py-2 rounded-full bg-gradient-to-r ${getLevelColor(avatar.level)} text-white text-sm font-bold shadow-lg border-2 border-white/30 whitespace-nowrap z-10`}>
                 {avatar.level} Fighter
               </div>
             </div>
 
-            {/* Stats */}
             <div className="flex gap-6 mt-8 text-center">
               <div className="bg-white/10 backdrop-blur-sm rounded-lg px-4 py-2 border border-white/20 hover:bg-white/15 transition-colors duration-200">
                 <div className="text-2xl font-bold text-white">{sessions.length}</div>
@@ -437,7 +560,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Progress Bar */}
             <div className="w-full max-w-xs mt-6">
               <div className="flex justify-between text-xs text-white/80 mb-2">
                 <span>Level Progress</span>
@@ -445,13 +567,12 @@ export default function Home() {
               <div className="w-full h-3 bg-white/10 rounded-full overflow-hidden border border-white/20 backdrop-blur-sm shadow-inner">
                 <div
                   className={`h-full bg-gradient-to-r ${getLevelColor(avatar.level)} transition-all duration-700 ease-out rounded-full shadow-lg`}
-                  style={{ width: `${Math.round(avatar.progress / 25) * 25}%` }}
+                  style={{ width: `${avatar.progress}%` }}
                 />
               </div>
             </div>
           </div>
 
-          {/* Action Buttons Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl mx-auto">
             <button
               onClick={() => setPage("log")}
@@ -522,7 +643,6 @@ export default function Home() {
         return;
       }
       
-      // Normalize date before submitting
       const normalizedDate = normalizeDateToISO(date);
       addSession({ date: normalizedDate, type, level });
       setDate("");
@@ -533,7 +653,6 @@ export default function Home() {
 
     const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       const inputValue = e.target.value;
-      // Normalize the date value to ensure ISO format
       const normalized = normalizeDateToISO(inputValue);
       setDate(normalized);
     };
@@ -653,11 +772,9 @@ export default function Home() {
 
   const HistoryPage = () => {
     const formatDate = (dateString: string) => {
-      // Ensure date is in ISO format for parsing
       const normalizedDate = normalizeDateToISO(dateString);
-      const date = new Date(normalizedDate);
+      const date = parseDateUTC(normalizedDate);
       if (isNaN(date.getTime())) {
-        // Fallback to displaying the original string if invalid
         return dateString;
       }
       return date.toLocaleDateString("en-US", {
@@ -804,13 +921,8 @@ export default function Home() {
       return "Max Level";
     };
 
-    const getRoundedProgress = (progress: number): number => {
-      return Math.round(progress / 25) * 25;
-    };
-
     const getProgressText = (progress: number): string => {
-      const rounded = getRoundedProgress(progress);
-      switch (rounded) {
+      switch (progress) {
         case 0:
           return "Getting started";
         case 25:
@@ -826,14 +938,12 @@ export default function Home() {
       }
     };
 
-    // Avatar is always available (defaults to Novice)
     if (!avatar) {
-      return null; // Should not happen, but handle gracefully
+      return null;
     }
 
     const currentLevel = avatar.level;
-    const progress = avatar.progress ?? 0;
-    const roundedProgress = getRoundedProgress(progress);
+    const progress = avatar.progress;
     const progressText = getProgressText(progress);
     const nextLevel = getNextLevel(currentLevel);
 
@@ -845,7 +955,7 @@ export default function Home() {
             <p className="text-white/70 text-sm sm:text-base">Track your progress and unlock new levels</p>
           </div>
 
-          {/* All Four Avatars Grid - Mobile Constrained, Desktop Unchanged */}
+          {/* All Four Avatars Grid - Fixed 3:4 Aspect Ratio */}
           <div className="bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 shadow-2xl p-4 sm:p-8 md:p-10 mb-8">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-6 md:gap-8">
               {AVATAR_LEVELS.map((level) => {
@@ -859,26 +969,19 @@ export default function Home() {
                       isCurrentLevel ? "transform scale-105" : "hover:scale-102"
                     }`}
                   >
-                    {/* Bounded Container for Mobile - Prevents Overflow */}
-                    <div className="relative mb-3 sm:mb-4 w-full max-w-[140px] sm:max-w-none flex justify-center overflow-hidden">
-                      {/* Glow Effect - Constrained on Mobile */}
+                    {/* Container with Fixed 3:4 Aspect Ratio - Mobile Safe */}
+                    <div className="relative mb-3 sm:mb-4 w-full aspect-[3/4] max-w-[140px] sm:max-w-none max-h-[200px] sm:max-h-none flex justify-center items-center overflow-hidden">
+                      {/* Glow Effect - Constrained */}
                       {isCurrentLevel && (
                         <div
                           className={`absolute inset-0 rounded-xl bg-gradient-to-r ${getLevelColor(level)} blur-xl sm:blur-2xl opacity-60 animate-pulse -z-10`}
-                          style={{
-                            width: "100%",
-                            height: "100%",
-                            top: "0%",
-                            left: "0%",
-                          }}
                         />
                       )}
 
-                      {/* Avatar Container with Proper Spacing */}
-                      <div className="relative w-full flex justify-center">
-                        {/* Border Highlight - Responsive Ring Size */}
+                      {/* Avatar with Aspect Ratio Container */}
+                      <div className="relative w-full h-full flex justify-center items-center">
                         <div
-                          className={`rounded-xl transition-all duration-300 ${
+                          className={`w-full h-full rounded-xl transition-all duration-300 ${
                             isCurrentLevel
                               ? `ring-2 sm:ring-4 ring-offset-2 sm:ring-offset-4 ring-offset-slate-900/50 ${
                                   level === "Novice"
@@ -894,18 +997,20 @@ export default function Home() {
                               : "ring-1 sm:ring-2 ring-white/10 opacity-50"
                           }`}
                         >
-                          <AvatarImage
-                            level={level}
-                            size="lg"
-                            showGlow={false}
-                            fullImage={true}
-                            className={`max-w-full h-auto ${!isUnlocked ? "opacity-40 grayscale" : ""}`}
-                          />
+                          <div className="w-full h-full aspect-[3/4] relative min-h-0">
+                            <AvatarImage
+                              level={level}
+                              size="lg"
+                              showGlow={false}
+                              fullImage={true}
+                              className={`w-full h-full ${!isUnlocked ? "opacity-40 grayscale" : ""}`}
+                            />
+                          </div>
                         </div>
                       </div>
                     </div>
 
-                    {/* Level Name - Proper Spacing */}
+                    {/* Level Name */}
                     <div className="text-center mt-1 sm:mt-2 w-full">
                       <p
                         className={`font-semibold text-xs sm:text-base md:text-lg transition-colors duration-300 ${
@@ -924,7 +1029,7 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Current Level Progress Card - No Points Displayed */}
+          {/* Current Level Progress Card */}
           <div className="bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 shadow-2xl p-6 sm:p-10">
             <div className="text-center mb-6">
               <div className="inline-block mb-4">
@@ -949,7 +1054,7 @@ export default function Home() {
                 <div className="w-full h-8 sm:h-10 bg-white/10 rounded-full overflow-hidden border border-white/20 shadow-inner backdrop-blur-sm">
                   <div
                     className={`h-full bg-gradient-to-r ${getLevelColor(currentLevel)} transition-all duration-700 ease-out rounded-full shadow-lg relative overflow-hidden`}
-                    style={{ width: `${roundedProgress}%` }}
+                    style={{ width: `${progress}%` }}
                   >
                     <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer" />
                   </div>
@@ -969,26 +1074,37 @@ export default function Home() {
   };
 
   const GroupRankingPage = () => {
-    // Use actual group members from localStorage (no mock data)
-    // Calculate current user's data from sessions
-    const currentUserScore = avatar?.cumulativePoints || 0;
-    const currentUserBadges = calculateBadgesFromSessions(sessions);
+    // Memoize sorted members to avoid recalculation during render
+    const sortedMembers = useMemo(() => {
+      // Update current user's data in group members from Supabase data
+      const updatedMembers = groupMembers.map((member) => {
+        if (member.userId === userId) {
+          return {
+            ...member,
+            score: currentUserScore,
+            badges: currentUserBadges,
+            isCurrentUser: true,
+            name: username || "You", // Use username from Supabase, fallback to "You"
+          };
+        }
+        return member;
+      });
 
-    // Update group members to reflect current user's actual data
-    const allMembers: MemberRanking[] = groupMembers.map((member) => {
-      if (member.userId === userId) {
-        return {
-          ...member,
+      // Ensure current user exists if not in list (edge case)
+      const userExists = updatedMembers.some((m) => m.userId === userId);
+      if (!userExists && userId) {
+        updatedMembers.push({
+          userId,
+          name: username || "You",
           score: currentUserScore,
           badges: currentUserBadges,
           isCurrentUser: true,
-        };
+        });
       }
-      return member;
-    });
 
-    // Sort by score descending (includes zero-point users)
-    const sortedMembers = [...allMembers].sort((a, b) => b.score - a.score);
+      // Sort by score descending (includes zero-score users)
+      return [...updatedMembers].sort((a, b) => b.score - a.score);
+    }, [groupMembers, userId, currentUserScore, currentUserBadges, username]);
 
     const getOrdinalRank = (index: number): string => {
       const rank = index + 1;
@@ -1096,7 +1212,7 @@ export default function Home() {
                                   <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
                                     <path
                                       fillRule="evenodd"
-                                      d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.945-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                                      d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
                                       clipRule="evenodd"
                                     />
                                   </svg>
@@ -1125,7 +1241,7 @@ export default function Home() {
   // Render pages
   return (
     <>
-      <OnboardingModal />
+      <OnboardingModal onUsernameSet={handleUsernameSet} />
       {(() => {
         switch (page) {
           case "home":
