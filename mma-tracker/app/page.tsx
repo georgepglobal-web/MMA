@@ -10,7 +10,6 @@ import { supabase, type GroupMember } from "../lib/supabase";
 const STORAGE_VERSION = "1.0.0";
 const STORAGE_KEYS = {
   VERSION: "fightmate-storage-version",
-  USER_ID: "fightmate-user-id",
   USERNAME: "fightmate-username",
   SESSIONS: "fightmate-sessions",
   AVATAR: "fightmate-avatar",
@@ -129,30 +128,73 @@ export default function Home() {
   const [userId, setUserId] = useState<string>("");
   const [username, setUsername] = useState<string | null>(null);
   const [groupMembers, setGroupMembers] = useState<MemberRanking[]>([]);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
 
-  // Initialize user ID, localStorage versioning, and initialize user in Supabase
+  // Initialize Supabase anonymous authentication
+  useEffect(() => {
+    const initializeAuth = async () => {
+      try {
+        // Check if session already exists
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        
+        if (sessionError) {
+          console.error("Error getting session:", sessionError);
+        }
+
+        if (session?.user) {
+          // Reuse existing session
+          console.log("Using existing Supabase auth session:", session.user.id);
+          setUserId(session.user.id);
+        } else {
+          // Sign in anonymously
+          const { data: authData, error: authError } = await supabase.auth.signInAnonymously();
+          
+          if (authError) {
+            console.error("Error signing in anonymously:", authError);
+            setAuthLoading(false);
+            return;
+          }
+
+          if (authData?.user) {
+            console.log("Signed in anonymously with user ID:", authData.user.id);
+            setUserId(authData.user.id);
+          }
+        }
+
+        // Load username from localStorage as fallback (will be synced from Supabase)
+        const storedUsername = localStorage.getItem(STORAGE_KEYS.USERNAME);
+        if (storedUsername) {
+          setUsername(storedUsername);
+        }
+      } catch (e) {
+        console.error("Error initializing authentication:", e);
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+
+    initializeAuth();
+
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setUserId(session.user.id);
+      } else {
+        setUserId("");
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // Initialize localStorage versioning and load sessions (after auth)
   useEffect(() => {
     // Check storage version and migrate if needed
     const storedVersion = localStorage.getItem(STORAGE_KEYS.VERSION);
     if (storedVersion !== STORAGE_VERSION) {
       localStorage.setItem(STORAGE_KEYS.VERSION, STORAGE_VERSION);
-    }
-
-    // Get or create user ID (stable per device)
-    let storedUserId = localStorage.getItem(STORAGE_KEYS.USER_ID);
-    if (!storedUserId) {
-      storedUserId = crypto.randomUUID();
-      localStorage.setItem(STORAGE_KEYS.USER_ID, storedUserId);
-      console.log("Generated new user ID:", storedUserId);
-    } else {
-      console.log("Using existing user ID:", storedUserId);
-    }
-    setUserId(storedUserId);
-
-    // Load username from localStorage as fallback (will be synced from Supabase)
-    const storedUsername = localStorage.getItem(STORAGE_KEYS.USERNAME);
-    if (storedUsername) {
-      setUsername(storedUsername);
     }
 
     // Load sessions with migration for old format (convert id from number to string)
@@ -317,9 +359,9 @@ export default function Home() {
     }
   }, [userId]);
 
-  // Initialize user in Supabase and fetch group members on mount
+  // Initialize user in Supabase and fetch group members on mount (wait for auth)
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || authLoading) return;
 
     // Ensure user is initialized in Supabase before fetching
     const initializeAndFetch = async () => {
@@ -331,7 +373,7 @@ export default function Home() {
     };
 
     initializeAndFetch();
-  }, [userId, initializeUserInSupabase, fetchGroupMembersFromSupabase]);
+  }, [userId, authLoading, initializeUserInSupabase, fetchGroupMembersFromSupabase]);
 
   /**
    * Calculate badges from session types
@@ -1282,7 +1324,15 @@ export default function Home() {
     );
   };
 
-  // Render pages
+  // Render pages (show loading state while authenticating)
+  if (authLoading) {
+    return (
+      <div className="min-h-[calc(100vh-4rem)] flex items-center justify-center bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 dark:from-black dark:via-purple-950 dark:to-black">
+        <div className="text-white text-lg">Loading...</div>
+      </div>
+    );
+  }
+
   return (
     <>
       <OnboardingModal onUsernameSet={handleUsernameSet} />
