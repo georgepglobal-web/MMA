@@ -78,7 +78,7 @@ const CLASS_LEVEL_MULTIPLIERS: Record<string, number> = {
 };
 
 // Default group ID
-const DEFAULT_GROUP_ID = "default-group";
+const DEFAULT_GROUP_ID = "global";
 
 /**
  * Normalize date to ISO format (YYYY-MM-DD)
@@ -138,11 +138,14 @@ export default function Home() {
       localStorage.setItem(STORAGE_KEYS.VERSION, STORAGE_VERSION);
     }
 
-    // Get or create user ID
+    // Get or create user ID (stable per device)
     let storedUserId = localStorage.getItem(STORAGE_KEYS.USER_ID);
     if (!storedUserId) {
       storedUserId = crypto.randomUUID();
       localStorage.setItem(STORAGE_KEYS.USER_ID, storedUserId);
+      console.log("Generated new user ID:", storedUserId);
+    } else {
+      console.log("Using existing user ID:", storedUserId);
     }
     setUserId(storedUserId);
 
@@ -184,42 +187,55 @@ export default function Home() {
     if (!userId) return;
 
     try {
-      // Check if user exists
-      const { data: existingUser, error: fetchError } = await supabase
+      // Use upsert to ensure user exists (simpler and more reliable)
+      const { data: existingUser, error: upsertError } = await supabase
         .from("group_members")
-        .select("username")
-        .eq("user_id", userId)
-        .eq("group_id", DEFAULT_GROUP_ID)
-        .single();
-
-      if (fetchError && fetchError.code !== "PGRST116") {
-        // PGRST116 = no rows returned, which is fine (user doesn't exist)
-        console.error("Error checking user in Supabase:", fetchError);
-        return;
-      }
-
-      // If user doesn't exist, insert new row
-      if (!existingUser) {
-        const { error: insertError } = await supabase
-          .from("group_members")
-          .insert({
+        .upsert(
+          {
             user_id: userId,
             group_id: DEFAULT_GROUP_ID,
             username: null,
             score: 0,
             badges: [],
             updated_at: new Date().toISOString(),
-          });
+          },
+          {
+            onConflict: "user_id,group_id",
+            ignoreDuplicates: false, // Update if exists
+          }
+        )
+        .select("username")
+        .single();
 
-        if (insertError) {
-          console.error("Error initializing user in Supabase:", insertError);
+      if (upsertError) {
+        console.warn("Upsert returned error (may be expected):", upsertError);
+        // If upsert fails, try to fetch existing user
+        const { data: fetchedUser, error: fetchError } = await supabase
+          .from("group_members")
+          .select("username")
+          .eq("user_id", userId)
+          .eq("group_id", DEFAULT_GROUP_ID)
+          .single();
+
+        if (fetchError && fetchError.code !== "PGRST116") {
+          console.error("Error fetching user after upsert failed:", fetchError);
+          return;
         }
-      } else {
+
+        if (fetchedUser?.username) {
+          setUsername(fetchedUser.username);
+          localStorage.setItem(STORAGE_KEYS.USERNAME, fetchedUser.username);
+          console.log("Synced username from Supabase:", fetchedUser.username);
+        } else {
+          console.log("User initialized in Supabase (no username)");
+        }
+      } else if (existingUser?.username) {
         // User exists - sync username from Supabase
-        if (existingUser.username) {
-          setUsername(existingUser.username);
-          localStorage.setItem(STORAGE_KEYS.USERNAME, existingUser.username);
-        }
+        setUsername(existingUser.username);
+        localStorage.setItem(STORAGE_KEYS.USERNAME, existingUser.username);
+        console.log("Synced username from existing Supabase user:", existingUser.username);
+      } else {
+        console.log("User initialized/verified in Supabase");
       }
     } catch (e) {
       console.error("Error initializing user in Supabase:", e);
@@ -230,7 +246,10 @@ export default function Home() {
    * Upsert current user to Supabase group members (with debouncing)
    */
   const upsertCurrentUserToSupabase = useCallback(async (userScore: number, userBadges: string[], userUsername: string | null) => {
-    if (!userId) return;
+    if (!userId) {
+      console.warn("Cannot upsert user: userId is missing");
+      return;
+    }
 
     try {
       const { error } = await supabase
@@ -246,11 +265,13 @@ export default function Home() {
           },
           {
             onConflict: "user_id,group_id",
+            ignoreDuplicates: false, // Always update if exists
           }
         );
 
       if (error) {
         console.error("Error upserting user to Supabase:", error);
+        console.error("User data:", { userId, groupId: DEFAULT_GROUP_ID, username: userUsername, score: userScore });
       }
     } catch (e) {
       console.error("Error upserting user to Supabase:", e);
@@ -261,6 +282,11 @@ export default function Home() {
    * Fetch group members from Supabase
    */
   const fetchGroupMembersFromSupabase = useCallback(async () => {
+    if (!userId) {
+      console.warn("Cannot fetch group members: userId is missing");
+      return;
+    }
+
     try {
       const { data, error } = await supabase
         .from("group_members")
@@ -274,6 +300,7 @@ export default function Home() {
       }
 
       if (data) {
+        console.log(`Fetched ${data.length} group members from Supabase`);
         const members: MemberRanking[] = data.map((member: GroupMember) => ({
           userId: member.user_id,
           name: member.username || (member.user_id === userId ? "You" : "Anonymous Fighter"),
@@ -282,6 +309,8 @@ export default function Home() {
           isCurrentUser: member.user_id === userId,
         }));
         setGroupMembers(members);
+      } else {
+        console.warn("No group members data returned from Supabase");
       }
     } catch (e) {
       console.error("Error fetching group members:", e);
@@ -290,11 +319,18 @@ export default function Home() {
 
   // Initialize user in Supabase and fetch group members on mount
   useEffect(() => {
-    if (userId) {
-      initializeUserInSupabase(userId).then(() => {
+    if (!userId) return;
+
+    // Ensure user is initialized in Supabase before fetching
+    const initializeAndFetch = async () => {
+      await initializeUserInSupabase(userId);
+      // Small delay to ensure initialization completes
+      setTimeout(() => {
         fetchGroupMembersFromSupabase();
-      });
-    }
+      }, 100);
+    };
+
+    initializeAndFetch();
   }, [userId, initializeUserInSupabase, fetchGroupMembersFromSupabase]);
 
   /**
@@ -493,20 +529,28 @@ export default function Home() {
    * Handle username set from onboarding modal
    */
   const handleUsernameSet = useCallback(async (newUsername: string) => {
-    if (!newUsername || !userId) return;
+    if (!newUsername || !userId) {
+      console.warn("Cannot set username: missing username or userId");
+      return;
+    }
 
     setUsername(newUsername);
     localStorage.setItem(STORAGE_KEYS.USERNAME, newUsername);
 
-    // Immediately sync username to Supabase
+    // Immediately sync username to Supabase (ensure user row exists first)
     try {
+      // First ensure user exists in Supabase
+      await initializeUserInSupabase(userId);
+      // Then upsert with username
       await upsertCurrentUserToSupabase(currentUserScore, currentUserBadges, newUsername);
       // Refresh group members after username update
-      fetchGroupMembersFromSupabase();
+      setTimeout(() => {
+        fetchGroupMembersFromSupabase();
+      }, 200);
     } catch (e) {
       console.error("Error updating username in Supabase:", e);
     }
-  }, [userId, currentUserScore, currentUserBadges, upsertCurrentUserToSupabase, fetchGroupMembersFromSupabase]);
+  }, [userId, currentUserScore, currentUserBadges, upsertCurrentUserToSupabase, fetchGroupMembersFromSupabase, initializeUserInSupabase]);
 
   // Components
   const HomePage = () => {
