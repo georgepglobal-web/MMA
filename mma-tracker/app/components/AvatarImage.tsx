@@ -1,4 +1,4 @@
-"use client";
+// Server-renderable gradient placeholder (no client-only hooks)
 
 import { useState, useEffect } from "react";
 import Image from "next/image";
