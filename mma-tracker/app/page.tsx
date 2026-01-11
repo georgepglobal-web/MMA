@@ -124,7 +124,11 @@ export default function Home() {
   const { currentPage: page, setCurrentPage: setPage } = usePage();
 
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [avatar, setAvatar] = useState<Avatar | null>(null);
+  const [avatar, setAvatar] = useState<Avatar>({
+    level: "Novice",
+    progress: 0,
+    cumulativePoints: 0,
+  });
   const [userId, setUserId] = useState<string>("");
   const [username, setUsername] = useState<string | null>(null);
   const [groupMembers, setGroupMembers] = useState<MemberRanking[]>([]);
@@ -595,6 +599,38 @@ export default function Home() {
   }, [userId, currentUserScore, currentUserBadges, upsertCurrentUserToSupabase, fetchGroupMembersFromSupabase, initializeUserInSupabase]);
 
   // Components
+  const Header = () => {
+    return (
+      <header className="sticky top-0 z-50 bg-slate-900/80 backdrop-blur-md border-b border-white/10">
+        <div className="max-w-4xl mx-auto px-4 sm:px-8 py-3 flex items-center justify-between">
+          <div
+            onClick={() => setPage("home")}
+            className="flex items-center gap-3 cursor-pointer text-white font-bold hover:text-blue-400 transition-colors duration-150"
+            aria-label="Go home"
+            role="button"
+          >
+            <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M13 5v6h6" />
+            </svg>
+            <span>FightMate</span>
+          </div>
+
+          <div>
+            {page !== "home" && (
+              <button
+                onClick={() => setPage("home")}
+                className="text-white/80 hover:text-white bg-white/0 px-3 py-1 rounded-md border border-white/10"
+                aria-label="Back to home"
+              >
+                Back
+              </button>
+            )}
+          </div>
+        </div>
+      </header>
+    );
+  };
+
   const HomePage = () => {
     const getLevelColor = (level: string) => {
       switch (level) {
@@ -611,26 +647,24 @@ export default function Home() {
       }
     };
 
-    if (!avatar) {
-      return null;
-    }
+    // avatar always initialized with a default value so HomePage can render immediately
 
     return (
       <div className="min-h-[calc(100vh-4rem)] p-4 sm:p-8 bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 dark:from-black dark:via-purple-950 dark:to-black">
         <div className="max-w-4xl mx-auto">
           <div className="flex flex-col items-center mb-12 mt-8 sm:mt-16">
             <div className="relative mb-8">
-              <div className={`absolute inset-0 rounded-xl bg-gradient-to-r ${getLevelColor(avatar.level)} blur-2xl opacity-60 animate-pulse -z-10`} style={{ width: "110%", height: "110%", top: "-5%", left: "-5%" }} />
-              
-              <AvatarImage
-                level={avatar.level}
-                size="xl"
-                showGlow={false}
-                fullImage={true}
-                className="mb-4"
-              />
+              <div className="relative w-48 h-64 sm:w-56 sm:h-72 rounded-2xl overflow-hidden shadow-2xl border-2 border-white/20">
+                <AvatarImage
+                  level={avatar.level}
+                  size="xl"
+                  showGlow={false}
+                  fullImage={true}
+                  className="w-full h-full"
+                />
+              </div>
 
-              <div className={`absolute -bottom-4 left-1/2 transform -translate-x-1/2 px-6 py-2 rounded-full bg-gradient-to-r ${getLevelColor(avatar.level)} text-white text-sm font-bold shadow-lg border-2 border-white/30 whitespace-nowrap z-10`}>
+              <div className={`absolute -bottom-3 left-1/2 transform -translate-x-1/2 px-4 py-1.5 rounded-full bg-gradient-to-r ${getLevelColor(avatar.level)} text-white text-xs font-bold shadow-lg border-2 border-white/30 whitespace-nowrap z-10`}>
                 {avatar.level} Fighter
               </div>
             </div>
@@ -768,7 +802,7 @@ export default function Home() {
                     value={date}
                     onChange={handleDateChange}
                     required
-                    className="w-full px-4 py-3 bg-white/10 border border-white/30 rounded-xl text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 backdrop-blur-sm"
+                    className="w-full px-3 py-2 sm:px-4 sm:py-3 bg-white/10 border border-white/30 rounded-xl text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 backdrop-blur-sm text-sm sm:text-base"
                     style={{ colorScheme: "dark" }}
                   />
                   <div className="absolute right-4 top-1/2 transform -translate-y-1/2 pointer-events-none">
@@ -1024,10 +1058,6 @@ export default function Home() {
       }
     };
 
-    if (!avatar) {
-      return null;
-    }
-
     const currentLevel = avatar.level;
     const progress = avatar.progress;
     const progressText = getProgressText(progress);
@@ -1056,43 +1086,31 @@ export default function Home() {
                     }`}
                   >
                     {/* Container with Fixed 3:4 Aspect Ratio - Mobile Safe */}
-                    <div className="relative mb-3 sm:mb-4 w-full aspect-[3/4] max-w-[140px] sm:max-w-none max-h-[200px] sm:max-h-none flex justify-center items-center overflow-hidden">
-                      {/* Glow Effect - Constrained */}
-                      {isCurrentLevel && (
-                        <div
-                          className={`absolute inset-0 rounded-xl bg-gradient-to-r ${getLevelColor(level)} blur-xl sm:blur-2xl opacity-60 animate-pulse -z-10`}
+                    <div className="relative mb-3 sm:mb-4 w-full max-w-[140px] sm:max-w-none max-h-[200px] sm:max-h-none flex justify-center items-center">
+                      <div
+                        className={`w-full h-full rounded-xl overflow-hidden shadow-lg transition-all duration-300 ${
+                          isCurrentLevel
+                            ? `ring-2 sm:ring-3 ring-offset-2 ring-offset-slate-900/50 ${
+                                level === "Novice"
+                                  ? "ring-gray-400"
+                                  : level === "Intermediate"
+                                  ? "ring-green-400"
+                                  : level === "Seasoned"
+                                  ? "ring-blue-400"
+                                  : "ring-purple-400"
+                              }`
+                            : isUnlocked
+                            ? "ring-1 sm:ring-2 ring-white/20"
+                            : "ring-1 sm:ring-2 ring-white/10 opacity-50"
+                        }`}
+                      >
+                        <AvatarImage
+                          level={level}
+                          size="lg"
+                          showGlow={false}
+                          fullImage={true}
+                          className={`w-full h-full ${!isUnlocked ? "opacity-40 grayscale" : ""}`}
                         />
-                      )}
-
-                      {/* Avatar with Aspect Ratio Container */}
-                      <div className="relative w-full h-full flex justify-center items-center">
-                        <div
-                          className={`w-full h-full rounded-xl transition-all duration-300 ${
-                            isCurrentLevel
-                              ? `ring-2 sm:ring-4 ring-offset-2 sm:ring-offset-4 ring-offset-slate-900/50 ${
-                                  level === "Novice"
-                                    ? "ring-gray-400"
-                                    : level === "Intermediate"
-                                    ? "ring-green-400"
-                                    : level === "Seasoned"
-                                    ? "ring-blue-400"
-                                    : "ring-purple-400"
-                                } shadow-xl sm:shadow-2xl`
-                              : isUnlocked
-                              ? "ring-1 sm:ring-2 ring-white/20"
-                              : "ring-1 sm:ring-2 ring-white/10 opacity-50"
-                          }`}
-                        >
-                          <div className="w-full h-full aspect-[3/4] relative min-h-0">
-                            <AvatarImage
-                              level={level}
-                              size="lg"
-                              showGlow={false}
-                              fullImage={true}
-                              className={`w-full h-full ${!isUnlocked ? "opacity-40 grayscale" : ""}`}
-                            />
-                          </div>
-                        </div>
                       </div>
                     </div>
 
@@ -1283,8 +1301,8 @@ export default function Home() {
                                 <span className="ml-2 text-xs bg-blue-500/30 px-2 py-0.5 rounded-full">You</span>
                               )}
                             </h3>
-                            <div className="flex items-center gap-2">
-                              <span className="text-white/70 text-sm sm:text-base">{getOrdinalRank(index)}</span>
+                              <div className="flex items-center gap-2">
+                              <span className="text-white/70 text-sm sm:text-base">{member.score.toFixed(1)} points</span>
                             </div>
                           </div>
 
@@ -1335,6 +1353,7 @@ export default function Home() {
 
   return (
     <>
+      <Header />
       <OnboardingModal onUsernameSet={handleUsernameSet} />
       {(() => {
         switch (page) {
