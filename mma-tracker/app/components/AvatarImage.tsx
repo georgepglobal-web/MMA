@@ -14,11 +14,11 @@ interface AvatarImageProps {
   onLoad?: () => void;
 }
 
-const LEVEL_GRADIENT: Record<AvatarImageProps["level"], string> = {
-  Novice: "from-gray-400 via-gray-500 to-gray-600",
-  Intermediate: "from-green-400 via-green-500 to-green-600",
-  Seasoned: "from-blue-400 via-blue-500 to-blue-600",
-  Elite: "from-purple-400 via-yellow-400 to-orange-500",
+const AVATAR_IMAGES: Record<AvatarImageProps["level"], string> = {
+  Novice: "/avatars/fighter-novice.png",
+  Intermediate: "/avatars/fighter-intermediate.png",
+  Seasoned: "/avatars/fighter-seasoned.png",
+  Elite: "/avatars/fighter-elite.png",
 };
 
 const SIZE_CLASSES: Record<string, string> = {
@@ -34,21 +34,34 @@ export default function AvatarImage({
   showGlow = true,
   className = "",
   fullImage = false,
+  onLoad,
 }: AvatarImageProps) {
   const shapeClass = fullImage ? "rounded-xl" : "rounded-full";
-  const gradient = LEVEL_GRADIENT[level];
-  const initial = level.charAt(0).toUpperCase();
+  const src = AVATAR_IMAGES[level];
 
   return (
     <div className={`relative ${SIZE_CLASSES[size]} ${className}`}>
       {showGlow && (
-        <div aria-hidden className={`absolute -inset-1 ${shapeClass} blur-xl opacity-50 -z-10 bg-gradient-to-r ${gradient}`} />
+        <div aria-hidden className={`absolute -inset-1 ${shapeClass} blur-xl opacity-40 -z-10 bg-gradient-to-r ${
+          level === "Novice"
+            ? "from-gray-400 to-gray-600"
+            : level === "Intermediate"
+            ? "from-green-400 to-green-600"
+            : level === "Seasoned"
+            ? "from-blue-400 to-blue-600"
+            : "from-purple-400 to-orange-500"
+        }`} />
       )}
 
-      <div className={`${shapeClass} w-full h-full overflow-hidden border-2 border-white/20 shadow-lg flex items-center justify-center bg-gradient-to-br ${gradient}`}>
-        <span className={`text-white font-bold ${size === "sm" ? "text-2xl" : size === "md" ? "text-3xl" : size === "lg" ? "text-4xl" : "text-5xl"}`}>
-          {initial}
-        </span>
+      <div className={`${shapeClass} w-full h-full overflow-hidden border-2 border-white/20 shadow-lg bg-slate-800`}>
+        <img
+          src={src}
+          alt={`Fighter avatar - ${level}`}
+          className="w-full h-full object-cover"
+          loading="eager"
+          decoding="sync"
+          onLoad={onLoad}
+        />
       </div>
     </div>
   );
