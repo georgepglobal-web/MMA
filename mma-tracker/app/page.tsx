@@ -136,6 +136,7 @@ export default function Home() {
   const [username, setUsername] = useState<string | null>(null);
   const [groupMembers, setGroupMembers] = useState<MemberRanking[]>([]);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
 
   // Auth effects moved to AuthGate component
 
@@ -416,8 +417,7 @@ export default function Home() {
   // Debounce timer for Supabase writes
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Ref to the shoutbox container so the FAB can scroll to it
-  const shoutboxRef = useRef<HTMLDivElement | null>(null);
+  // shoutboxRef removed — shoutbox is rendered on demand in an overlay
 
   // Upsert current user to Supabase when score/badges change (debounced)
   useEffect(() => {
@@ -1330,12 +1330,9 @@ export default function Home() {
       <>
         <Header />
         <OnboardingModal onUsernameSet={handleUsernameSet} />
-        <div ref={shoutboxRef}>
-          <Shoutbox userId={userId} username={username} />
-        </div>
         <ChatFAB
           unreadCount={0}
-          onClick={() => shoutboxRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+          onClick={() => setIsChatOpen((v) => !v)}
         />
         {(() => {
           switch (page) {
@@ -1353,6 +1350,29 @@ export default function Home() {
               return <HomePage />;
           }
         })()}
+        {/* Chat overlay — Shoutbox is reused and only mounted when open */}
+        {isChatOpen && (
+          <div className="fixed inset-0 z-50 flex items-end justify-end">
+            <div className="absolute inset-0 bg-black/40" onClick={() => setIsChatOpen(false)} />
+
+            <div className="relative w-full sm:w-[420px] max-h-[80vh] m-4 sm:m-6 bg-slate-900/95 rounded-t-xl sm:rounded-xl shadow-2xl border border-white/10 overflow-hidden backdrop-blur-md">
+              <div className="flex items-center justify-between p-3 border-b border-white/10">
+                <h3 className="text-white font-bold">Chat</h3>
+                <button
+                  onClick={() => setIsChatOpen(false)}
+                  aria-label="Close chat"
+                  className="text-white/80 hover:text-white px-2 py-1 rounded-md"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="h-[64vh] overflow-auto">
+                <Shoutbox userId={userId} username={username} />
+              </div>
+            </div>
+          </div>
+        )}
       </>
     </AuthGate>
   );
