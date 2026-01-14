@@ -418,6 +418,9 @@ export default function Home() {
   // Debounce timer for Supabase writes
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Track message count when chat was last viewed
+  const lastMessageCountRef = useRef<number>(0);
+
   // Reset unread count when chat opens
   useEffect(() => {
     if (isChatOpen) {
@@ -1377,7 +1380,16 @@ export default function Home() {
                 <Shoutbox
                   userId={userId}
                   username={username}
-                  onNewMessages={(count) => !isChatOpen && setUnreadCount(count)}
+                  onNewMessages={(messages) => {
+                    if (isChatOpen) {
+                      lastMessageCountRef.current = messages.length;
+                    } else {
+                      const newMessages = messages.length - lastMessageCountRef.current;
+                      if (newMessages > 0) {
+                        setUnreadCount(newMessages);
+                      }
+                    }
+                  }}
                 />
               </div>
             </div>

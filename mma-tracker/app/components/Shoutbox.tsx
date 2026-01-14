@@ -16,7 +16,7 @@ interface ShoutboxMessageWithName extends ShoutboxMessage {
 interface ShoutboxProps {
   userId: string;
   username: string | null;
-  onNewMessages?: (count: number) => void;
+  onNewMessages?: (messages: ShoutboxMessageWithName[]) => void;
 }
 
 export default function Shoutbox({ userId, username, onNewMessages }: ShoutboxProps) {
@@ -80,7 +80,7 @@ export default function Shoutbox({ userId, username, onNewMessages }: ShoutboxPr
       }));
 
       setMessages(mapped);
-      onNewMessages?.(mapped.length);
+      onNewMessages?.(mapped);
     } catch (e) {
       console.error("Error fetching shoutbox messages:", e);
     }
