@@ -7,6 +7,7 @@ import OnboardingModal from "./components/OnboardingModal";
 import { supabase, type GroupMember } from "../lib/supabase";
 import AuthGate from "./components/AuthGate";
 import Shoutbox from "./components/Shoutbox";
+import ChatFAB from "./components/ChatFAB";
 
 // LocalStorage schema version
 const STORAGE_VERSION = "1.0.0";
@@ -414,6 +415,9 @@ export default function Home() {
 
   // Debounce timer for Supabase writes
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Ref to the shoutbox container so the FAB can scroll to it
+  const shoutboxRef = useRef<HTMLDivElement | null>(null);
 
   // Upsert current user to Supabase when score/badges change (debounced)
   useEffect(() => {
@@ -1326,7 +1330,13 @@ export default function Home() {
       <>
         <Header />
         <OnboardingModal onUsernameSet={handleUsernameSet} />
-        <Shoutbox userId={userId} username={username} />
+        <div ref={shoutboxRef}>
+          <Shoutbox userId={userId} username={username} />
+        </div>
+        <ChatFAB
+          unreadCount={0}
+          onClick={() => shoutboxRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+        />
         {(() => {
           switch (page) {
             case "home":
