@@ -8,7 +8,6 @@ import { supabase, type GroupMember } from "../lib/supabase";
 import AuthGate from "./components/AuthGate";
 import Shoutbox from "./components/Shoutbox";
 import ChatFAB from "./components/ChatFAB";
-import UserAvatar from "./components/UserAvatar";
 
 // LocalStorage schema version
 const STORAGE_VERSION = "1.0.0";
@@ -17,10 +16,7 @@ const STORAGE_KEYS = {
   USERNAME: "fightmate-username",
   SESSIONS: "fightmate-sessions",
   AVATAR: "fightmate-avatar",
-  AVATAR_STYLE: "fightmate-avatar-style",
 } as const;
-
-const AVATAR_STYLES = ["adventurer", "avataaars", "pixel-art", "identicon"];
 
 // Types
 interface Session {
@@ -142,7 +138,6 @@ export default function Home() {
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
-  const [avatarStyle, setAvatarStyle] = useState<string>("adventurer");
 
   // Auth effects moved to AuthGate component
 
@@ -152,12 +147,6 @@ export default function Home() {
     const storedVersion = localStorage.getItem(STORAGE_KEYS.VERSION);
     if (storedVersion !== STORAGE_VERSION) {
       localStorage.setItem(STORAGE_KEYS.VERSION, STORAGE_VERSION);
-    }
-
-    // Load avatar style
-    const savedAvatarStyle = localStorage.getItem(STORAGE_KEYS.AVATAR_STYLE);
-    if (savedAvatarStyle && AVATAR_STYLES.includes(savedAvatarStyle)) {
-      setAvatarStyle(savedAvatarStyle);
     }
 
     // Load sessions with migration for old format (convert id from number to string)
@@ -624,24 +613,6 @@ export default function Home() {
                 Back
               </button>
             )}
-          </div>
-
-          <div className="flex items-center gap-3">
-            <select
-              value={avatarStyle}
-              onChange={(e) => {
-                setAvatarStyle(e.target.value);
-                localStorage.setItem(STORAGE_KEYS.AVATAR_STYLE, e.target.value);
-              }}
-              className="text-xs sm:text-sm px-2 py-1 bg-white/10 border border-white/20 rounded text-white focus:outline-none"
-              aria-label="Change avatar style"
-            >
-              {AVATAR_STYLES.map((style) => (
-                <option key={style} value={style} className="bg-slate-800">
-                  {style.charAt(0).toUpperCase() + style.slice(1)}
-                </option>
-              ))}
-            </select>
           </div>
         </div>
       </header>
@@ -1309,15 +1280,6 @@ export default function Home() {
                         </div>
                       </div>
 
-                      <div className="flex-shrink-0">
-                        <UserAvatar
-                          userId={member.userId}
-                          username={member.name}
-                          avatarStyle={avatarStyle}
-                          size="md"
-                        />
-                      </div>
-
                       <div className="flex-1 min-w-0">
                         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
                           <div className="flex-1">
@@ -1418,7 +1380,6 @@ export default function Home() {
                 <Shoutbox
                   userId={userId}
                   username={username}
-                  avatarStyle={avatarStyle}
                   onNewMessages={(messages) => {
                     if (isChatOpen) {
                       lastMessageCountRef.current = messages.length;

@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
-import UserAvatar from "./UserAvatar";
 
 interface ShoutboxMessage {
   id: string;
@@ -17,11 +16,10 @@ interface ShoutboxMessageWithName extends ShoutboxMessage {
 interface ShoutboxProps {
   userId: string;
   username: string | null;
-  avatarStyle?: string;
   onNewMessages?: (messages: ShoutboxMessageWithName[]) => void;
 }
 
-export default function Shoutbox({ userId, username, avatarStyle = "adventurer", onNewMessages }: ShoutboxProps) {
+export default function Shoutbox({ userId, username, onNewMessages }: ShoutboxProps) {
   const [messages, setMessages] = useState<ShoutboxMessageWithName[]>([]);
   const [input, setInput] = useState("");
   const [posting, setPosting] = useState(false);
@@ -141,14 +139,6 @@ export default function Shoutbox({ userId, username, avatarStyle = "adventurer",
             [...messages].reverse().map((m) => (
               <div key={m.id} className="p-3">
                 <div className="flex items-start gap-3">
-                  {avatarStyle && (
-                    <UserAvatar
-                      userId={m.user_id}
-                      username={m.displayName}
-                      avatarStyle={avatarStyle}
-                      size="sm"
-                    />
-                  )}
                   <div className="flex-1">
                     <div className="text-white font-semibold text-sm">{m.displayName}</div>
                     <div className={`text-white/90 text-sm`}>{m.content}</div>
