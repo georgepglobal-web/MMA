@@ -5,6 +5,8 @@ import { usePage } from "./contexts/PageContext";
 import AvatarImage from "./components/AvatarImage";
 import OnboardingModal from "./components/OnboardingModal";
 import { supabase, type GroupMember } from "../lib/supabase";
+import AuthGate from "./components/AuthGate";
+import Shoutbox from "./components/Shoutbox";
 
 // LocalStorage schema version
 const STORAGE_VERSION = "1.0.0";
@@ -134,50 +136,7 @@ export default function Home() {
   const [groupMembers, setGroupMembers] = useState<MemberRanking[]>([]);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
 
-  // Initialize Supabase auth (magic-link flow)
-  useEffect(() => {
-    const initializeAuth = async () => {
-      try {
-        // Check if session already exists
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-
-        if (sessionError) {
-          console.error("Error getting session:", sessionError);
-        }
-
-        if (session?.user) {
-          // Reuse existing session
-          console.log("Using existing Supabase auth session:", session.user.id);
-          setUserId(session.user.id);
-        }
-
-        // Load username from localStorage as fallback (will be synced from Supabase)
-        const storedUsername = localStorage.getItem(STORAGE_KEYS.USERNAME);
-        if (storedUsername) {
-          setUsername(storedUsername);
-        }
-      } catch (e) {
-        console.error("Error initializing authentication:", e);
-      } finally {
-        setAuthLoading(false);
-      }
-    };
-
-    initializeAuth();
-
-    // Listen for auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        setUserId(session.user.id);
-      } else {
-        setUserId("");
-      }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, []);
+  // Auth effects moved to AuthGate component
 
   // Initialize localStorage versioning and load sessions (after auth)
   useEffect(() => {
@@ -1358,258 +1317,33 @@ export default function Home() {
     );
   };
 
-  // Shoutbox component (minimal, polling, latest 30 messages)
-  interface ShoutboxMessage {
-    id: string;
-    user_id: string;
-    type: "system" | "user";
-    content: string;
-    created_at: string;
-  }
+  // Shoutbox component moved to app/components/Shoutbox.tsx
 
-  interface ShoutboxMessageWithName extends ShoutboxMessage {
-    displayName: string;
-  }
-
-  const Shoutbox = () => {
-    const [messages, setMessages] = useState<ShoutboxMessageWithName[]>([]);
-    const [input, setInput] = useState("");
-    const [posting, setPosting] = useState(false);
-    const lastPostTsRef = useRef<number>(0);
-
-    const timeAgo = (iso: string) => {
-      const d = new Date(iso).getTime();
-      const s = Math.floor((Date.now() - d) / 1000);
-      if (s < 60) return `${s}s`;
-      const m = Math.floor(s / 60);
-      if (m < 60) return `${m}m`;
-      const h = Math.floor(m / 60);
-      if (h < 24) return `${h}h`;
-      const days = Math.floor(h / 24);
-      return `${days}d`;
-    };
-
-    const fetchMessages = useCallback(async () => {
-      if (!userId) return;
-      try {
-        const { data, error } = await supabase
-          .from("shoutbox_messages")
-          .select("id,user_id,type,content,created_at")
-          .order("created_at", { ascending: false })
-          .limit(30);
-
-        if (error) {
-          console.error("Error fetching shoutbox messages:", error);
-          return;
-        }
-
-        const msgs: ShoutboxMessage[] = (data as any) || [];
-        const userIds = Array.from(new Set(msgs.map((m) => m.user_id).filter(Boolean)));
-
-        let usernameMap: Record<string, string> = {};
-        if (userIds.length > 0) {
-          const { data: gm, error: gmErr } = await supabase
-            .from("group_members")
-            .select("user_id,username")
-            .in("user_id", userIds as string[]);
-
-          if (!gmErr && gm) {
-            (gm as any[]).forEach((g) => {
-              if (g.user_id) usernameMap[g.user_id] = g.username;
-            });
-          }
-        }
-
-        const mapped: ShoutboxMessageWithName[] = msgs.map((m) => ({
-          ...m,
-          displayName:
-            usernameMap[m.user_id] || (m.user_id === userId ? username || "You" : "Anonymous"),
-        }));
-
-        setMessages(mapped);
-      } catch (e) {
-        console.error("Error fetching shoutbox messages:", e);
-      }
-    }, [userId, username]);
-
-    useEffect(() => {
-      fetchMessages();
-      const id = window.setInterval(fetchMessages, 5000);
-      return () => clearInterval(id);
-    }, [fetchMessages]);
-
-    const postMessage = async () => {
-      if (!userId) return alert("You must be signed in to post");
-      const trimmed = input.trim();
-      if (!trimmed) return;
-      if (trimmed.length > 200) return alert("Message must be 200 characters or less");
-      const now = Date.now();
-      if (now - lastPostTsRef.current < 10000) return alert("Rate limit: 1 message per 10 seconds");
-      lastPostTsRef.current = now;
-
-      try {
-        setPosting(true);
-        const { error } = await supabase
-          .from("shoutbox_messages")
-          .insert({ user_id: userId, type: "user", content: trimmed });
-
-        if (error) {
-          console.error("Error posting shoutbox message:", error);
-          alert("Error posting message. Check console.");
-          return;
-        }
-
-        setInput("");
-        await fetchMessages();
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setPosting(false);
-      }
-    };
-
-    return (
-      <div className="max-w-4xl mx-auto p-4">
-        <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow p-4">
-          <h3 className="text-white font-bold mb-3">Activity</h3>
-
-          <div className="max-h-72 overflow-auto divide-y divide-white/10 mb-3">
-            {messages.length === 0 ? (
-              <div className="text-white/60 p-3">No messages yet.</div>
-            ) : (
-              messages.map((m) => (
-                <div key={m.id} className="p-3">
-                  <div className="flex items-start gap-3">
-                    <div className="flex-1">
-                      <div className="text-white font-semibold text-sm">{m.displayName}</div>
-                      <div className={`text-white/90 text-sm`}>{m.content}</div>
-                    </div>
-                    <div className="text-white/50 text-xs whitespace-nowrap">{timeAgo(m.created_at)}</div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="mt-2">
-            <div className="flex gap-2">
-              <input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Say something..."
-                maxLength={200}
-                className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
-              />
-              <button
-                onClick={postMessage}
-                disabled={posting}
-                className="bg-blue-500 hover:bg-blue-600 text-white font-bold px-4 py-2 rounded-lg"
-              >
-                {posting ? "Posting…" : "Send"}
-              </button>
-            </div>
-            <div className="text-white/50 text-xs mt-2">Max 200 characters — 1 message per 10s</div>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  // Render pages (show loading state while authenticating)
-  const LoginScreen = () => {
-    const [email, setEmail] = useState("");
-    const [sending, setSending] = useState(false);
-    const [sent, setSent] = useState(false);
-
-    const handleSend = async (e?: React.FormEvent) => {
-      if (e) e.preventDefault();
-      if (!email) return alert("Please enter your email");
-
-      try {
-        setSending(true);
-        const { data, error } = await supabase.auth.signInWithOtp({ email });
-        if (error) {
-          console.error("Error sending magic link:", error);
-          alert("Error sending magic link. Check console.");
-          return;
-        }
-
-        console.log("Magic link sent response:", data);
-        setSent(true);
-      } catch (err) {
-        console.error("Unexpected error sending magic link:", err);
-        alert("Unexpected error. Check console.");
-      } finally {
-        setSending(false);
-      }
-    };
-
-    return (
-      <div className="min-h-[calc(100vh-4rem)] flex items-center justify-center bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 dark:from-black dark:via-purple-950 dark:to-black">
-        <div className="w-full max-w-md p-6 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10">
-          <h2 className="text-2xl font-bold text-white mb-2">Sign in</h2>
-          <p className="text-white/70 text-sm mb-4">Enter your email to receive a magic link.</p>
-
-          {sent ? (
-            <div className="text-white">Check your email for the magic link.</div>
-          ) : (
-            <form onSubmit={handleSend} className="space-y-4">
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/60"
-              />
-              <button
-                type="submit"
-                onClick={handleSend}
-                disabled={sending}
-                className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-xl"
-              >
-                {sending ? "Sending…" : "Send magic link"}
-              </button>
-            </form>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  if (authLoading) {
-    return (
-      <div className="min-h-[calc(100vh-4rem)] flex items-center justify-center bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 dark:from-black dark:via-purple-950 dark:to-black">
-        <div className="text-white text-lg">Loading...</div>
-      </div>
-    );
-  }
-
-  // If not authenticated, show inline login screen (magic link)
-  if (!userId) {
-    return <LoginScreen />;
-  }
+  // LoginScreen moved to app/components/LoginScreen.tsx
 
   return (
-    <>
-      <Header />
-      <OnboardingModal onUsernameSet={handleUsernameSet} />
-      <Shoutbox />
-      {(() => {
-        switch (page) {
-          case "home":
-            return <HomePage />;
-          case "log":
-            return <LogSession />;
-          case "history":
-            return <HistoryPage />;
-          case "avatar":
-            return <AvatarEvolutionPage />;
-          case "ranking":
-            return <GroupRankingPage />;
-          default:
-            return <HomePage />;
-        }
-      })()}
-    </>
+    <AuthGate userId={userId} setUserId={setUserId} authLoading={authLoading} setAuthLoading={setAuthLoading}>
+      <>
+        <Header />
+        <OnboardingModal onUsernameSet={handleUsernameSet} />
+        <Shoutbox userId={userId} username={username} />
+        {(() => {
+          switch (page) {
+            case "home":
+              return <HomePage />;
+            case "log":
+              return <LogSession />;
+            case "history":
+              return <HistoryPage />;
+            case "avatar":
+              return <AvatarEvolutionPage />;
+            case "ranking":
+              return <GroupRankingPage />;
+            default:
+              return <HomePage />;
+          }
+        })()}
+      </>
+    </AuthGate>
   );
 }
