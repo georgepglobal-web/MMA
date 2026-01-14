@@ -408,17 +408,36 @@ export default function Home() {
    * Recalculate avatar from sessions (fully derived)
    * Always creates a default "Novice" avatar if no sessions exist
    */
-  const recalculateAvatarFromSessions = useCallback((allSessions: Session[]) => {
+  const recalculateAvatarFromSessions = useCallback(async (allSessions: Session[]) => {
     const totalPoints = allSessions.reduce((sum, s) => sum + (s.points || 0), 0);
-    const level = calculateLevelFromPoints(totalPoints);
-    const progress = calculateProgressInLevel(totalPoints, level);
+    const newLevel = calculateLevelFromPoints(totalPoints);
+    const progress = calculateProgressInLevel(totalPoints, newLevel);
 
-    setAvatar({
-      level,
-      progress,
-      cumulativePoints: totalPoints,
+    // Detect level up
+    setAvatar((prev) => {
+      const oldLevel = prev?.level;
+      const next = {
+        level: newLevel,
+        progress,
+        cumulativePoints: totalPoints,
+      };
+
+      // If leveled up, insert a system message announcing the level up
+      if (oldLevel && newLevel !== oldLevel && userId) {
+        const displayName = username || "Anonymous";
+        const content = `${displayName} leveled up to ${newLevel} 🎉`;
+        // Fire-and-forget; best-effort system message insert
+        supabase
+          .from("shoutbox_messages")
+          .insert({ user_id: userId, type: "system", content })
+          .then(({ error }) => {
+            if (error) console.error("Error inserting level-up system message:", error);
+          });
+      }
+
+      return next;
     });
-  }, []);
+  }, [userId, username]);
 
   // Recalculate avatar whenever sessions change
   useEffect(() => {
@@ -546,6 +565,17 @@ export default function Home() {
     };
 
     setSessions((prev) => [newSession, ...prev]);
+    // Insert a system message announcing the session log
+    if (userId) {
+      const displayName = username || "Anonymous";
+      const content = `${displayName} logged ${session.type} (${session.level}) 🥋`;
+      supabase
+        .from("shoutbox_messages")
+        .insert({ user_id: userId, type: "system", content })
+        .then(({ error }) => {
+          if (error) console.error("Error inserting session system message:", error);
+        });
+    }
   };
 
   /**
@@ -1328,6 +1358,163 @@ export default function Home() {
     );
   };
 
+  // Shoutbox component (minimal, polling, latest 30 messages)
+  interface ShoutboxMessage {
+    id: string;
+    user_id: string;
+    type: "system" | "user";
+    content: string;
+    created_at: string;
+  }
+
+  interface ShoutboxMessageWithName extends ShoutboxMessage {
+    displayName: string;
+  }
+
+  const Shoutbox = () => {
+    const [messages, setMessages] = useState<ShoutboxMessageWithName[]>([]);
+    const [input, setInput] = useState("");
+    const [posting, setPosting] = useState(false);
+    const lastPostTsRef = useRef<number>(0);
+
+    const timeAgo = (iso: string) => {
+      const d = new Date(iso).getTime();
+      const s = Math.floor((Date.now() - d) / 1000);
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m}m`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h}h`;
+      const days = Math.floor(h / 24);
+      return `${days}d`;
+    };
+
+    const fetchMessages = useCallback(async () => {
+      if (!userId) return;
+      try {
+        const { data, error } = await supabase
+          .from("shoutbox_messages")
+          .select("id,user_id,type,content,created_at")
+          .order("created_at", { ascending: false })
+          .limit(30);
+
+        if (error) {
+          console.error("Error fetching shoutbox messages:", error);
+          return;
+        }
+
+        const msgs: ShoutboxMessage[] = (data as any) || [];
+        const userIds = Array.from(new Set(msgs.map((m) => m.user_id).filter(Boolean)));
+
+        let usernameMap: Record<string, string> = {};
+        if (userIds.length > 0) {
+          const { data: gm, error: gmErr } = await supabase
+            .from("group_members")
+            .select("user_id,username")
+            .in("user_id", userIds as string[]);
+
+          if (!gmErr && gm) {
+            (gm as any[]).forEach((g) => {
+              if (g.user_id) usernameMap[g.user_id] = g.username;
+            });
+          }
+        }
+
+        const mapped: ShoutboxMessageWithName[] = msgs.map((m) => ({
+          ...m,
+          displayName:
+            usernameMap[m.user_id] || (m.user_id === userId ? username || "You" : "Anonymous"),
+        }));
+
+        setMessages(mapped);
+      } catch (e) {
+        console.error("Error fetching shoutbox messages:", e);
+      }
+    }, [userId, username]);
+
+    useEffect(() => {
+      fetchMessages();
+      const id = window.setInterval(fetchMessages, 5000);
+      return () => clearInterval(id);
+    }, [fetchMessages]);
+
+    const postMessage = async () => {
+      if (!userId) return alert("You must be signed in to post");
+      const trimmed = input.trim();
+      if (!trimmed) return;
+      if (trimmed.length > 200) return alert("Message must be 200 characters or less");
+      const now = Date.now();
+      if (now - lastPostTsRef.current < 10000) return alert("Rate limit: 1 message per 10 seconds");
+      lastPostTsRef.current = now;
+
+      try {
+        setPosting(true);
+        const { error } = await supabase
+          .from("shoutbox_messages")
+          .insert({ user_id: userId, type: "user", content: trimmed });
+
+        if (error) {
+          console.error("Error posting shoutbox message:", error);
+          alert("Error posting message. Check console.");
+          return;
+        }
+
+        setInput("");
+        await fetchMessages();
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setPosting(false);
+      }
+    };
+
+    return (
+      <div className="max-w-4xl mx-auto p-4">
+        <div className="bg-white/5 backdrop-blur-md rounded-2xl border border-white/10 shadow p-4">
+          <h3 className="text-white font-bold mb-3">Activity</h3>
+
+          <div className="max-h-72 overflow-auto divide-y divide-white/10 mb-3">
+            {messages.length === 0 ? (
+              <div className="text-white/60 p-3">No messages yet.</div>
+            ) : (
+              messages.map((m) => (
+                <div key={m.id} className="p-3">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-1">
+                      <div className="text-white font-semibold text-sm">{m.displayName}</div>
+                      <div className={`text-white/90 text-sm`}>{m.content}</div>
+                    </div>
+                    <div className="text-white/50 text-xs whitespace-nowrap">{timeAgo(m.created_at)}</div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="mt-2">
+            <div className="flex gap-2">
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Say something..."
+                maxLength={200}
+                className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white"
+              />
+              <button
+                onClick={postMessage}
+                disabled={posting}
+                className="bg-blue-500 hover:bg-blue-600 text-white font-bold px-4 py-2 rounded-lg"
+              >
+                {posting ? "Posting…" : "Send"}
+              </button>
+            </div>
+            <div className="text-white/50 text-xs mt-2">Max 200 characters — 1 message per 10s</div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // Render pages (show loading state while authenticating)
   const LoginScreen = () => {
     const [email, setEmail] = useState("");
@@ -1406,6 +1593,7 @@ export default function Home() {
     <>
       <Header />
       <OnboardingModal onUsernameSet={handleUsernameSet} />
+      <Shoutbox />
       {(() => {
         switch (page) {
           case "home":
