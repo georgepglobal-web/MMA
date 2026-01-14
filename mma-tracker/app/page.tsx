@@ -137,6 +137,7 @@ export default function Home() {
   const [groupMembers, setGroupMembers] = useState<MemberRanking[]>([]);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
+  const [unreadCount, setUnreadCount] = useState<number>(0);
 
   // Auth effects moved to AuthGate component
 
@@ -417,7 +418,12 @@ export default function Home() {
   // Debounce timer for Supabase writes
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // shoutboxRef removed — shoutbox is rendered on demand in an overlay
+  // Reset unread count when chat opens
+  useEffect(() => {
+    if (isChatOpen) {
+      setUnreadCount(0);
+    }
+  }, [isChatOpen]);
 
   // Upsert current user to Supabase when score/badges change (debounced)
   useEffect(() => {
@@ -1331,7 +1337,7 @@ export default function Home() {
         <Header />
         <OnboardingModal onUsernameSet={handleUsernameSet} />
         <ChatFAB
-          unreadCount={0}
+          unreadCount={unreadCount}
           onClick={() => setIsChatOpen((v) => !v)}
         />
         {(() => {
@@ -1368,7 +1374,11 @@ export default function Home() {
               </div>
 
               <div className="h-[64vh] overflow-auto">
-                <Shoutbox userId={userId} username={username} />
+                <Shoutbox
+                  userId={userId}
+                  username={username}
+                  onNewMessages={(count) => !isChatOpen && setUnreadCount(count)}
+                />
               </div>
             </div>
           </div>

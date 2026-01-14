@@ -13,11 +13,22 @@ interface ShoutboxMessageWithName extends ShoutboxMessage {
   displayName: string;
 }
 
-export default function Shoutbox({ userId, username }: { userId: string; username: string | null }) {
+interface ShoutboxProps {
+  userId: string;
+  username: string | null;
+  onNewMessages?: (count: number) => void;
+}
+
+export default function Shoutbox({ userId, username, onNewMessages }: ShoutboxProps) {
   const [messages, setMessages] = useState<ShoutboxMessageWithName[]>([]);
   const [input, setInput] = useState("");
   const [posting, setPosting] = useState(false);
   const lastPostTsRef = useRef<number>(0);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
 
   const timeAgo = (iso: string) => {
     const d = new Date(iso).getTime();
@@ -69,6 +80,7 @@ export default function Shoutbox({ userId, username }: { userId: string; usernam
       }));
 
       setMessages(mapped);
+      onNewMessages?.(mapped.length);
     } catch (e) {
       console.error("Error fetching shoutbox messages:", e);
     }
@@ -79,6 +91,11 @@ export default function Shoutbox({ userId, username }: { userId: string; usernam
     const id = window.setInterval(fetchMessages, 5000);
     return () => clearInterval(id);
   }, [fetchMessages]);
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
 
   const postMessage = async () => {
     if (!userId) return alert("You must be signed in to post");
@@ -119,7 +136,7 @@ export default function Shoutbox({ userId, username }: { userId: string; usernam
           {messages.length === 0 ? (
             <div className="text-white/60 p-3">No messages yet.</div>
           ) : (
-            messages.map((m) => (
+            [...messages].reverse().map((m) => (
               <div key={m.id} className="p-3">
                 <div className="flex items-start gap-3">
                   <div className="flex-1">
@@ -131,6 +148,7 @@ export default function Shoutbox({ userId, username }: { userId: string; usernam
               </div>
             ))
           )}
+          <div ref={messagesEndRef} />
         </div>
 
         <div className="mt-2">
