@@ -238,6 +238,8 @@ export default function Home() {
 
   /**
    * Upsert current user to Supabase group members (with debouncing)
+   * Only updates username if a valid (non-null) username exists to prevent
+   * overwriting existing usernames in the database with null values
    */
   const upsertCurrentUserToSupabase = useCallback(async (userScore: number, userBadges: string[], userUsername: string | null) => {
     if (!userId) {
@@ -246,22 +248,25 @@ export default function Home() {
     }
 
     try {
+      // Build upsert payload: only include username if it's not null
+      const upsertPayload: any = {
+        user_id: userId,
+        group_id: DEFAULT_GROUP_ID,
+        score: userScore,
+        badges: userBadges,
+        updated_at: new Date().toISOString(),
+      };
+
+      if (userUsername !== null) {
+        upsertPayload.username = userUsername;
+      }
+
       const { error } = await supabase
         .from("group_members")
-        .upsert(
-          {
-            user_id: userId,
-            group_id: DEFAULT_GROUP_ID,
-            username: userUsername,
-            score: userScore,
-            badges: userBadges,
-            updated_at: new Date().toISOString(),
-          },
-          {
-            onConflict: "user_id,group_id",
-            ignoreDuplicates: false, // Always update if exists
-          }
-        );
+        .upsert(upsertPayload, {
+          onConflict: "user_id,group_id",
+          ignoreDuplicates: false, // Always update if exists
+        });
 
       if (error) {
         console.error("Error upserting user to Supabase:", error);
@@ -416,15 +421,17 @@ export default function Home() {
   const currentUserScore = useMemo(() => avatar?.cumulativePoints || 0, [avatar?.cumulativePoints]);
 
   // Debounce timer for Supabase writes
-  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Track message count when chat was last viewed
   const lastMessageCountRef = useRef<number>(0);
 
-  // Reset unread count when chat opens
+  // Sync lastMessageCountRef and reset unread count when chat opens
   useEffect(() => {
     if (isChatOpen) {
+      // When chat opens, reset unread count and prepare to sync message count
       setUnreadCount(0);
+      // Note: lastMessageCountRef will be synced via onNewMessages callback
     }
   }, [isChatOpen]);
 
@@ -1382,11 +1389,21 @@ export default function Home() {
                   username={username}
                   onNewMessages={(messages) => {
                     if (isChatOpen) {
+                      // When chat is open, always sync the current message count
                       lastMessageCountRef.current = messages.length;
                     } else {
-                      const newMessages = messages.length - lastMessageCountRef.current;
-                      if (newMessages > 0) {
-                        setUnreadCount(newMessages);
+                      // When chat is closed, only increment unread if lastMessageCountRef was initialized
+                      if (lastMessageCountRef.current === 0 && messages.length > 0) {
+                        // First time Shoutbox loads with messages while chat is closed
+                        // Initialize the ref to avoid counting existing messages as "new"
+                        lastMessageCountRef.current = messages.length;
+                      } else if (messages.length > lastMessageCountRef.current) {
+                        // New messages arrived while chat was closed
+                        const delta = messages.length - lastMessageCountRef.current;
+                        // Accumulate unread messages (don't overwrite)
+                        setUnreadCount((prev) => prev + delta);
+                        // Update the ref to the new count
+                        lastMessageCountRef.current = messages.length;
                       }
                     }
                   }}
