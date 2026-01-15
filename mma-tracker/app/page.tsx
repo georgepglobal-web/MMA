@@ -427,12 +427,41 @@ export default function Home() {
   const lastMessageCountRef = useRef<number>(0);
   const lastMessageInitializedRef = useRef<boolean>(false);
 
-  // Sync lastMessageCountRef and reset unread count when chat opens
+  // Subscribe to shoutbox messages for unread count tracking (works even when chat is closed)
+  useEffect(() => {
+    // Create subscription to track new messages
+    const subscription = supabase
+      .channel("shoutbox-messages")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "shoutbox_messages",
+        },
+        (payload) => {
+          // When a new message arrives
+          lastMessageCountRef.current += 1;
+          lastMessageInitializedRef.current = true;
+
+          // Only increment unread count if chat is closed
+          if (!isChatOpen) {
+            setUnreadCount((prev) => prev + 1);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [isChatOpen]);
+
+  // Reset unread count and sync baseline when chat opens
   useEffect(() => {
     if (isChatOpen) {
-      // When chat opens, reset unread count and prepare to sync message count
       setUnreadCount(0);
-      // Note: lastMessageCountRef will be synced via onNewMessages callback
+      // Baseline is synced via the Shoutbox component when it mounts
     }
   }, [isChatOpen]);
 
@@ -1398,24 +1427,10 @@ export default function Home() {
                   userId={userId}
                   username={username}
                   onNewMessages={(messages) => {
+                    // Sync baseline when Shoutbox loads (chat is open)
                     if (isChatOpen) {
-                      // When chat is open, always sync the current message count
                       lastMessageCountRef.current = messages.length;
                       lastMessageInitializedRef.current = true;
-                    } else {
-                      // When chat is closed
-                      if (!lastMessageInitializedRef.current) {
-                        // First initialization: set baseline without counting as "new"
-                        lastMessageCountRef.current = messages.length;
-                        lastMessageInitializedRef.current = true;
-                      } else if (messages.length > lastMessageCountRef.current) {
-                        // New messages arrived while chat was closed
-                        const delta = messages.length - lastMessageCountRef.current;
-                        // Accumulate unread messages
-                        setUnreadCount((prev) => prev + delta);
-                        // Update the ref to the new count
-                        lastMessageCountRef.current = messages.length;
-                      }
                     }
                   }}
                 />
