@@ -423,8 +423,9 @@ export default function Home() {
   // Debounce timer for Supabase writes
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Track message count when chat was last viewed
+  // Track message count and initialization state
   const lastMessageCountRef = useRef<number>(0);
+  const lastMessageInitializedRef = useRef<boolean>(false);
 
   // Sync lastMessageCountRef and reset unread count when chat opens
   useEffect(() => {
@@ -1201,8 +1202,17 @@ export default function Home() {
         });
       }
 
-      // Sort by score descending (includes zero-score users)
-      return [...updatedMembers].sort((a, b) => b.score - a.score);
+      // Filter out anonymous non-current users
+      const filteredMembers = updatedMembers.filter((member) => {
+        // Always include current user
+        if (member.isCurrentUser) return true;
+        // Include members with a valid name
+        const hasValidName = member.name && member.name !== "Anonymous Fighter";
+        return hasValidName;
+      });
+
+      // Sort by score descending
+      return [...filteredMembers].sort((a, b) => b.score - a.score);
     }, [groupMembers, userId, currentUserScore, currentUserBadges, username]);
 
     const getOrdinalRank = (index: number): string => {
@@ -1391,16 +1401,17 @@ export default function Home() {
                     if (isChatOpen) {
                       // When chat is open, always sync the current message count
                       lastMessageCountRef.current = messages.length;
+                      lastMessageInitializedRef.current = true;
                     } else {
-                      // When chat is closed, only increment unread if lastMessageCountRef was initialized
-                      if (lastMessageCountRef.current === 0 && messages.length > 0) {
-                        // First time Shoutbox loads with messages while chat is closed
-                        // Initialize the ref to avoid counting existing messages as "new"
+                      // When chat is closed
+                      if (!lastMessageInitializedRef.current) {
+                        // First initialization: set baseline without counting as "new"
                         lastMessageCountRef.current = messages.length;
+                        lastMessageInitializedRef.current = true;
                       } else if (messages.length > lastMessageCountRef.current) {
                         // New messages arrived while chat was closed
                         const delta = messages.length - lastMessageCountRef.current;
-                        // Accumulate unread messages (don't overwrite)
+                        // Accumulate unread messages
                         setUnreadCount((prev) => prev + delta);
                         // Update the ref to the new count
                         lastMessageCountRef.current = messages.length;
