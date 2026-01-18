@@ -1,53 +1,104 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { supabase } from "../../lib/supabase";
+
+const DEFAULT_GROUP_ID = "global";
 
 interface OnboardingModalProps {
+  userId?: string;
+  hasUsername: boolean;
   onUsernameSet?: (username: string) => void;
 }
 
-export default function OnboardingModal({ onUsernameSet }: OnboardingModalProps) {
+export default function OnboardingModal({ userId, hasUsername, onUsernameSet }: OnboardingModalProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [username, setUsername] = useState("");
   const [step, setStep] = useState<"welcome" | "username">("welcome");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Check if user has seen onboarding
-    const hasSeenOnboarding = localStorage.getItem("fightmate-onboarding-seen");
-    const hasUsername = localStorage.getItem("fightmate-username");
-    
-    if (!hasSeenOnboarding) {
+    // Only show onboarding if user doesn't have a username
+    if (!hasUsername) {
       setIsOpen(true);
-      // If no username, go directly to username step
-      if (!hasUsername) {
-        setStep("username");
-      }
+      setStep("username");
     }
-  }, []);
+  }, [hasUsername]);
 
   const handleClose = () => {
+    // Don't allow closing without a username
+    if (!hasUsername) return;
+    
     setIsOpen(false);
-    localStorage.setItem("fightmate-onboarding-seen", "true");
   };
 
-  const handleUsernameSubmit = (e: React.FormEvent) => {
+  /**
+   * Check if username is already taken in Supabase
+   */
+  const checkUsernameAvailability = async (checkUsername: string): Promise<boolean> => {
+    try {
+      const { data, error } = await supabase
+        .from("group_members")
+        .select("user_id")
+        .eq("group_id", DEFAULT_GROUP_ID)
+        .eq("username", checkUsername)
+        .single();
+
+      // If error is "PGRST116" (no rows found), username is available
+      if (error && error.code === "PGRST116") {
+        return true;
+      }
+
+      // If data exists, username is taken
+      if (data) {
+        return false;
+      }
+
+      // Any other error, assume available (will fail on submission)
+      return true;
+    } catch (e) {
+      console.error("Error checking username availability:", e);
+      return true;
+    }
+  };
+
+  const handleUsernameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedUsername = username.trim();
     
+    setError(null);
+
     if (!trimmedUsername) {
-      alert("Please enter a username");
+      setError("Please enter a username");
       return;
     }
 
     // Validate username (alphanumeric, underscore, hyphen, 3-20 chars)
     if (!/^[a-zA-Z0-9_-]{3,20}$/.test(trimmedUsername)) {
-      alert("Username must be 3-20 characters and contain only letters, numbers, underscores, or hyphens");
+      setError("Username must be 3-20 characters and contain only letters, numbers, underscores, or hyphens");
       return;
     }
 
-    localStorage.setItem("fightmate-username", trimmedUsername);
-    onUsernameSet?.(trimmedUsername);
-    setStep("welcome");
+    try {
+      setIsLoading(true);
+
+      // Check if username is available
+      const isAvailable = await checkUsernameAvailability(trimmedUsername);
+      if (!isAvailable) {
+        setError("This username is already taken. Please choose another.");
+        return;
+      }
+
+      // Username is valid and available, call the callback
+      onUsernameSet?.(trimmedUsername);
+      setStep("welcome");
+    } catch (e) {
+      console.error("Error setting username:", e);
+      setError("An error occurred. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -77,17 +128,25 @@ export default function OnboardingModal({ onUsernameSet }: OnboardingModalProps)
                 autoFocus
                 maxLength={20}
                 pattern="[a-zA-Z0-9_-]{3,20}"
+                disabled={isLoading}
               />
               <p className="text-white/50 text-xs mt-2">
                 3-20 characters, letters, numbers, underscores, or hyphens only
               </p>
             </div>
 
+            {error && (
+              <div className="bg-red-500/20 border border-red-500/50 rounded-lg px-3 py-2">
+                <p className="text-red-200 text-sm">{error}</p>
+              </div>
+            )}
+
             <button
               type="submit"
-              className="w-full bg-gradient-to-r from-blue-500 to-cyan-600 hover:from-blue-600 hover:to-cyan-700 text-white font-bold py-3 px-6 rounded-xl shadow-lg transform transition-all duration-300 hover:scale-105"
+              disabled={isLoading || !username.trim()}
+              className="w-full bg-gradient-to-r from-blue-500 to-cyan-600 hover:from-blue-600 hover:to-cyan-700 disabled:from-blue-500/50 disabled:to-cyan-600/50 disabled:cursor-not-allowed text-white font-bold py-3 px-6 rounded-xl shadow-lg transform transition-all duration-300 hover:scale-105 disabled:scale-100"
             >
-              Continue
+              {isLoading ? "Checking availability..." : "Continue"}
             </button>
           </form>
         </div>

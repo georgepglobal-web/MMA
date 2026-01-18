@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
+import { analytics } from "@/lib/analytics";
 
 interface ShoutboxMessage {
   id: string;
@@ -119,6 +120,10 @@ export default function Shoutbox({ userId, username, onNewMessages }: ShoutboxPr
       }
 
       setInput("");
+      
+      // Track analytics
+      analytics.messagesSent();
+      
       await fetchMessages();
     } catch (e) {
       console.error(e);

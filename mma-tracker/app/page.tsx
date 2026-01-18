@@ -4,10 +4,13 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { usePage } from "./contexts/PageContext";
 import AvatarImage from "./components/AvatarImage";
 import OnboardingModal from "./components/OnboardingModal";
-import { supabase, type GroupMember } from "../lib/supabase";
+import { supabase, type GroupMember, type DbSession } from "../lib/supabase";
 import AuthGate from "./components/AuthGate";
 import Shoutbox from "./components/Shoutbox";
 import ChatFAB from "./components/ChatFAB";
+import MigrationBanner from "./components/MigrationBanner";
+import { useSessionMigration } from "@/lib/hooks/useSessionMigration";
+import { analytics } from "@/lib/analytics";
 
 // LocalStorage schema version
 const STORAGE_VERSION = "1.0.0";
@@ -19,15 +22,6 @@ const STORAGE_KEYS = {
 } as const;
 
 // Types
-interface Session {
-  id: string; // Changed to string, using crypto.randomUUID()
-  date: string; // ISO format: YYYY-MM-DD
-  type: string;
-  level: string;
-  points: number;
-  groupId: string;
-}
-
 interface Avatar {
   level: "Novice" | "Intermediate" | "Seasoned" | "Elite";
   progress: number;
@@ -126,7 +120,8 @@ const parseDateUTC = (dateString: string): Date => {
 export default function Home() {
   const { currentPage: page, setCurrentPage: setPage } = usePage();
 
-  const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessions, setSessions] = useState<DbSession[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
   const [avatar, setAvatar] = useState<Avatar>({
     level: "Novice",
     progress: 0,
@@ -139,50 +134,116 @@ export default function Home() {
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
 
+  // Migration hook
+  const { 
+    migrationNeeded, 
+    migrating, 
+    migrationResult, 
+    migrate, 
+    dismiss 
+  } = useSessionMigration(userId);
+
+  // Set analytics user
+  useEffect(() => {
+    analytics.setUser(userId);
+  }, [userId]);
+
+  // Track page changes
+  useEffect(() => {
+    analytics.setPage(page);
+    analytics.pageView(page);
+  }, [page]);
+
   // Auth effects moved to AuthGate component
 
-  // Initialize localStorage versioning and load sessions (after auth)
+  // Initialize localStorage versioning (only for backward compatibility)
   useEffect(() => {
-    // Check storage version and migrate if needed
+    // Check storage version for any remaining localStorage references
     const storedVersion = localStorage.getItem(STORAGE_KEYS.VERSION);
     if (storedVersion !== STORAGE_VERSION) {
       localStorage.setItem(STORAGE_KEYS.VERSION, STORAGE_VERSION);
     }
+  }, []);
 
-    // Load sessions with migration for old format (convert id from number to string)
-    const savedSessions = localStorage.getItem(STORAGE_KEYS.SESSIONS);
-    if (savedSessions) {
+  // Fetch sessions from Supabase
+  useEffect(() => {
+    if (!userId || authLoading) return;
+
+    const fetchSessions = async () => {
+      setSessionsLoading(true);
       try {
-        const parsed = JSON.parse(savedSessions);
-        // Migrate old sessions: convert id to string, normalize dates, ensure groupId
-        const migrated = parsed.map((s: any) => ({
-          ...s,
-          id: typeof s.id === "number" ? String(s.id) : (s.id || crypto.randomUUID()),
-          date: normalizeDateToISO(s.date),
-          groupId: s.groupId || DEFAULT_GROUP_ID,
-        }));
-        setSessions(migrated);
-        localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(migrated));
-      } catch (e) {
-        console.error("Error loading sessions:", e);
-        setSessions([]);
-        localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify([]));
+        const { data, error } = await supabase
+          .from('sessions')
+          .select('*')
+          .eq('user_id', userId)
+          .order('date', { ascending: false });
+
+        if (error) {
+          console.error('Error fetching sessions:', error);
+          return;
+        }
+
+        setSessions(data || []);
+      } catch (err) {
+        console.error('Failed to fetch sessions:', err);
+      } finally {
+        setSessionsLoading(false);
       }
-    } else {
-      setSessions([]);
-      localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify([]));
+    };
+
+    fetchSessions();
+  }, [userId, authLoading]);
+
+  // Auto-migrate on first load
+  useEffect(() => {
+    if (migrationNeeded && !migrating && !migrationResult) {
+      migrate();
+    }
+  }, [migrationNeeded, migrating, migrationResult, migrate]);
+
+  /**
+   * Fetch and sync username from Supabase (source of truth)
+   * This is called when user is authenticated to load their persisted username
+   */
+  const syncUsernameFromSupabase = useCallback(async (userIdToSync: string) => {
+    if (!userIdToSync) return;
+
+    try {
+      const { data, error } = await supabase
+        .from("group_members")
+        .select("username")
+        .eq("user_id", userIdToSync)
+        .eq("group_id", DEFAULT_GROUP_ID)
+        .single();
+
+      if (error && error.code !== "PGRST116") {
+        console.warn("Error fetching username from Supabase:", error);
+        return;
+      }
+
+      if (data?.username) {
+        setUsername(data.username);
+        console.log("Synced username from Supabase:", data.username);
+      } else {
+        console.log("No username found in Supabase for user");
+        setUsername(null);
+      }
+    } catch (e) {
+      console.error("Error syncing username from Supabase:", e);
+      setUsername(null);
     }
   }, []);
 
   /**
    * Initialize user in Supabase (check if exists, insert if not)
+   * Then sync username from Supabase
    */
   const initializeUserInSupabase = useCallback(async (userId: string) => {
     if (!userId) return;
 
     try {
       // Use upsert to ensure user exists (simpler and more reliable)
-      const { data: existingUser, error: upsertError } = await supabase
+      const { error: upsertError } = await supabase
         .from("group_members")
         .upsert(
           {
@@ -198,43 +259,18 @@ export default function Home() {
             ignoreDuplicates: false, // Update if exists
           }
         )
-        .select("username")
-        .single();
+        .select();
 
       if (upsertError) {
         console.warn("Upsert returned error (may be expected):", upsertError);
-        // If upsert fails, try to fetch existing user
-        const { data: fetchedUser, error: fetchError } = await supabase
-          .from("group_members")
-          .select("username")
-          .eq("user_id", userId)
-          .eq("group_id", DEFAULT_GROUP_ID)
-          .single();
-
-        if (fetchError && fetchError.code !== "PGRST116") {
-          console.error("Error fetching user after upsert failed:", fetchError);
-          return;
-        }
-
-        if (fetchedUser?.username) {
-          setUsername(fetchedUser.username);
-          localStorage.setItem(STORAGE_KEYS.USERNAME, fetchedUser.username);
-          console.log("Synced username from Supabase:", fetchedUser.username);
-        } else {
-          console.log("User initialized in Supabase (no username)");
-        }
-      } else if (existingUser?.username) {
-        // User exists - sync username from Supabase
-        setUsername(existingUser.username);
-        localStorage.setItem(STORAGE_KEYS.USERNAME, existingUser.username);
-        console.log("Synced username from existing Supabase user:", existingUser.username);
-      } else {
-        console.log("User initialized/verified in Supabase");
       }
+
+      // Always sync username from Supabase after initialization
+      await syncUsernameFromSupabase(userId);
     } catch (e) {
       console.error("Error initializing user in Supabase:", e);
     }
-  }, []);
+  }, [syncUsernameFromSupabase]);
 
   /**
    * Upsert current user to Supabase group members (with debouncing)
@@ -316,11 +352,11 @@ export default function Home() {
     }
   }, [userId]);
 
-  // Initialize user in Supabase and fetch group members on mount (wait for auth)
+  // Initialize user in Supabase and fetch group members on auth (wait for auth)
   useEffect(() => {
     if (!userId || authLoading) return;
 
-    // Ensure user is initialized in Supabase before fetching
+    // Ensure user is initialized in Supabase and username is synced
     const initializeAndFetch = async () => {
       await initializeUserInSupabase(userId);
       // Small delay to ensure initialization completes
@@ -335,7 +371,7 @@ export default function Home() {
   /**
    * Calculate badges from session types
    */
-  const calculateBadgesFromSessions = useCallback((allSessions: Session[]): string[] => {
+  const calculateBadgesFromSessions = useCallback((allSessions: DbSession[]): string[] => {
     const badges: string[] = [];
     const typeCounts: Record<string, number> = {};
 
@@ -375,7 +411,7 @@ export default function Home() {
    * Recalculate avatar from sessions (fully derived)
    * Always creates a default "Novice" avatar if no sessions exist
    */
-  const recalculateAvatarFromSessions = useCallback(async (allSessions: Session[]) => {
+  const recalculateAvatarFromSessions = useCallback(async (allSessions: DbSession[]) => {
     const totalPoints = allSessions.reduce((sum, s) => sum + (s.points || 0), 0);
     const newLevel = calculateLevelFromPoints(totalPoints);
     const progress = calculateProgressInLevel(totalPoints, newLevel);
@@ -393,6 +429,10 @@ export default function Home() {
       if (oldLevel && newLevel !== oldLevel && userId) {
         const displayName = username || "Anonymous";
         const content = `${displayName} leveled up to ${newLevel} 🎉`;
+        
+        // Track analytics
+        analytics.avatarLevelUp(newLevel, totalPoints);
+        
         // Fire-and-forget; best-effort system message insert
         supabase
           .from("shoutbox_messages")
@@ -410,11 +450,6 @@ export default function Home() {
   useEffect(() => {
     recalculateAvatarFromSessions(sessions);
   }, [sessions, recalculateAvatarFromSessions]);
-
-  // Always persist sessions array (even if empty)
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
-  }, [sessions]);
 
   // Memoize current user badges and score
   const currentUserBadges = useMemo(() => calculateBadgesFromSessions(sessions), [sessions, calculateBadgesFromSessions]);
@@ -491,7 +526,7 @@ export default function Home() {
   /**
    * Calculate weekly diversity bonus using UTC dates
    */
-  const calculateWeeklyDiversityBonus = (existingSessions: Session[], newSession: Omit<Session, "id" | "points" | "groupId">): number => {
+  const calculateWeeklyDiversityBonus = (existingSessions: DbSession[], newSession: Omit<DbSession, 'id' | 'user_id' | 'created_at' | 'updated_at'>): number => {
     // Parse dates as UTC to avoid timezone issues
     const sessionDate = parseDateUTC(newSession.date);
     const weekStart = new Date(Date.UTC(
@@ -509,7 +544,7 @@ export default function Home() {
         const sDate = parseDateUTC(s.date);
         return sDate >= weekStart && sDate < weekEnd;
       }),
-      { ...newSession, date: newSession.date } as Session,
+      { ...newSession, date: newSession.date } as DbSession,
     ];
 
     const uniqueTypes = new Set(weekSessions.map((s) => s.type));
@@ -558,46 +593,93 @@ export default function Home() {
   };
 
   /**
-   * Add a new training session
+   * Add a new training session to Supabase
    */
-  const addSession = (session: Omit<Session, "id" | "points" | "groupId">) => {
-    const normalizedDate = normalizeDateToISO(session.date);
-    const diversityBonus = calculateWeeklyDiversityBonus(sessions, { ...session, date: normalizedDate });
+  const addSession = async (session: Omit<DbSession, 'id' | 'user_id' | 'created_at' | 'updated_at'>) => {
+    if (!userId) return;
+
+    const diversityBonus = calculateWeeklyDiversityBonus(sessions, session);
     const sessionPoints = calculateSessionPoints(session.level, diversityBonus);
 
-    const newSession: Session = {
+    const newSession = {
+      user_id: userId,
       ...session,
-      date: normalizedDate,
-      id: crypto.randomUUID(), // Use crypto.randomUUID() instead of Date.now()
       points: sessionPoints,
-      groupId: DEFAULT_GROUP_ID,
     };
 
-    setSessions((prev) => [newSession, ...prev]);
-    // Insert a system message announcing the session log
-    if (userId) {
-      const displayName = username || "Anonymous";
-      const content = `${displayName} logged ${session.type} (${session.level}) 🥋`;
-      supabase
-        .from("shoutbox_messages")
-        .insert({ user_id: userId, type: "system", content })
-        .then(({ error }) => {
-          if (error) console.error("Error inserting session system message:", error);
-        });
+    try {
+      // Insert to Supabase
+      const { data, error } = await supabase
+        .from('sessions')
+        .insert(newSession)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error adding session:', error);
+        alert('Failed to save session. Please try again.');
+        return;
+      }
+
+      // Update local state
+      setSessions((prev) => [data, ...prev]);
+
+      // Track analytics
+      analytics.sessionLogged(session.type, session.level, sessionPoints);
+
+      // Insert system message announcing the session log
+      if (userId) {
+        const displayName = username || "Anonymous";
+        const content = `${displayName} logged ${session.type} (${session.level}) 🥋`;
+        supabase
+          .from("shoutbox_messages")
+          .insert({ user_id: userId, type: "system", content })
+          .then(({ error }) => {
+            if (error) console.error("Error inserting session system message:", error);
+          });
+      }
+    } catch (err) {
+      console.error('Failed to add session:', err);
+      alert('Failed to save session. Please try again.');
     }
   };
 
   /**
-   * Delete a session and recalculate avatar
+   * Delete a session from Supabase
    */
-  const deleteSession = (sessionId: string) => {
-    if (confirm("Are you sure you want to delete this session?")) {
+  const deleteSession = async (sessionId: string) => {
+    if (!confirm("Are you sure you want to delete this session?")) return;
+
+    const sessionToDelete = sessions.find(s => s.id === sessionId);
+
+    try {
+      const { error } = await supabase
+        .from('sessions')
+        .delete()
+        .eq('id', sessionId);
+
+      if (error) {
+        console.error('Error deleting session:', error);
+        alert('Failed to delete session. Please try again.');
+        return;
+      }
+
+      // Update local state
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+
+      // Track analytics
+      if (sessionToDelete) {
+        analytics.sessionDeleted(sessionToDelete.type);
+      }
+    } catch (err) {
+      console.error('Failed to delete session:', err);
+      alert('Failed to delete session. Please try again.');
     }
   };
 
   /**
    * Handle username set from onboarding modal
+   * Persist to Supabase as source of truth
    */
   const handleUsernameSet = useCallback(async (newUsername: string) => {
     if (!newUsername || !userId) {
@@ -605,15 +687,37 @@ export default function Home() {
       return;
     }
 
-    setUsername(newUsername);
-    localStorage.setItem(STORAGE_KEYS.USERNAME, newUsername);
-
-    // Immediately sync username to Supabase (ensure user row exists first)
     try {
       // First ensure user exists in Supabase
       await initializeUserInSupabase(userId);
-      // Then upsert with username
-      await upsertCurrentUserToSupabase(currentUserScore, currentUserBadges, newUsername);
+      
+      // Then upsert with username (now it's set)
+      const { error } = await supabase
+        .from("group_members")
+        .upsert(
+          {
+            user_id: userId,
+            group_id: DEFAULT_GROUP_ID,
+            username: newUsername,
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: "user_id,group_id",
+            ignoreDuplicates: false,
+          }
+        );
+
+      if (error) {
+        console.error("Error setting username in Supabase:", error);
+        return;
+      }
+
+      // Update local state and sync from Supabase
+      setUsername(newUsername);
+      
+      // Track analytics
+      analytics.usernameSet(newUsername);
+      
       // Refresh group members after username update
       setTimeout(() => {
         fetchGroupMembersFromSupabase();
@@ -621,9 +725,41 @@ export default function Home() {
     } catch (e) {
       console.error("Error updating username in Supabase:", e);
     }
-  }, [userId, currentUserScore, currentUserBadges, upsertCurrentUserToSupabase, fetchGroupMembersFromSupabase, initializeUserInSupabase]);
+  }, [userId, initializeUserInSupabase, fetchGroupMembersFromSupabase]);
 
   // Components
+  const RequiresUsernameGate = ({ children }: { children: React.ReactNode }) => {
+    if (!username) {
+      return (
+        <div className="min-h-[calc(100vh-4rem)] p-4 sm:p-8 bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 dark:from-black dark:via-purple-950 dark:to-black">
+          <div className="max-w-4xl mx-auto mt-20">
+            <div className="text-center">
+              <div className="mb-6">
+                <svg className="w-16 h-16 mx-auto text-yellow-400 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                </svg>
+              </div>
+              <h2 className="text-2xl sm:text-3xl font-bold text-white mb-4">
+                Username Required
+              </h2>
+              <p className="text-white/70 mb-8 text-sm sm:text-base">
+                Set your username in the onboarding modal to unlock this feature
+              </p>
+              <button
+                onClick={() => setPage("home")}
+                className="bg-gradient-to-r from-blue-500 to-cyan-600 hover:from-blue-600 hover:to-cyan-700 text-white font-bold py-3 px-8 rounded-xl shadow-lg transform transition-all duration-300 hover:scale-105"
+              >
+                Back to Home
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return <>{children}</>;
+  };
+
   const Header = () => {
     return (
       <header className="sticky top-0 z-50 bg-slate-900/80 backdrop-blur-md border-b border-white/10">
@@ -780,19 +916,28 @@ export default function Home() {
     const [date, setDate] = useState("");
     const [type, setType] = useState(SESSION_TYPES[0]);
     const [level, setLevel] = useState(CLASS_LEVELS[0]);
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
       e.preventDefault();
       if (!date) {
         alert("Please select a date");
         return;
       }
       
+      setIsSubmitting(true);
       const normalizedDate = normalizeDateToISO(date);
-      addSession({ date: normalizedDate, type, level });
+      await addSession({ 
+        date: normalizedDate, 
+        type, 
+        level,
+        group_id: DEFAULT_GROUP_ID,
+        points: 0, // Will be calculated
+      });
       setDate("");
       setType(SESSION_TYPES[0]);
       setLevel(CLASS_LEVELS[0]);
+      setIsSubmitting(false);
       setPage("history");
     };
 
@@ -891,14 +1036,15 @@ export default function Home() {
               <div className="pt-4">
                 <button
                   type="submit"
-                  className="w-full group relative overflow-hidden bg-gradient-to-r from-blue-500 to-cyan-600 hover:from-blue-600 hover:to-cyan-700 text-white font-bold py-4 px-6 rounded-xl shadow-2xl transform transition-all duration-300 hover:scale-[1.02] hover:shadow-blue-500/50 border-2 border-white/20 backdrop-blur-sm"
+                  disabled={isSubmitting}
+                  className="w-full group relative overflow-hidden bg-gradient-to-r from-blue-500 to-cyan-600 hover:from-blue-600 hover:to-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-4 px-6 rounded-xl shadow-2xl transform transition-all duration-300 hover:scale-[1.02] hover:shadow-blue-500/50 border-2 border-white/20 backdrop-blur-sm"
                 >
                   <div className="absolute inset-0 bg-white/0 group-hover:bg-white/10 transition-colors duration-300" />
                   <div className="relative flex items-center justify-center gap-2">
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                     </svg>
-                    <span className="text-lg">Log Session</span>
+                    <span className="text-lg">{isSubmitting ? "Saving..." : "Log Session"}</span>
                   </div>
                 </button>
               </div>
@@ -1384,7 +1530,18 @@ export default function Home() {
     <AuthGate userId={userId} setUserId={setUserId} authLoading={authLoading} setAuthLoading={setAuthLoading}>
       <>
         <Header />
-        <OnboardingModal onUsernameSet={handleUsernameSet} />
+        <MigrationBanner
+          migrationNeeded={migrationNeeded}
+          migrating={migrating}
+          migrationResult={migrationResult}
+          onMigrate={migrate}
+          onDismiss={dismiss}
+        />
+        <OnboardingModal 
+          userId={userId}
+          hasUsername={!!username}
+          onUsernameSet={handleUsernameSet} 
+        />
         <ChatFAB
           unreadCount={unreadCount}
           onClick={() => setIsChatOpen((v) => !v)}
@@ -1394,13 +1551,13 @@ export default function Home() {
             case "home":
               return <HomePage />;
             case "log":
-              return <LogSession />;
+              return <RequiresUsernameGate><LogSession /></RequiresUsernameGate>;
             case "history":
-              return <HistoryPage />;
+              return <RequiresUsernameGate><HistoryPage /></RequiresUsernameGate>;
             case "avatar":
-              return <AvatarEvolutionPage />;
+              return <RequiresUsernameGate><AvatarEvolutionPage /></RequiresUsernameGate>;
             case "ranking":
-              return <GroupRankingPage />;
+              return <RequiresUsernameGate><GroupRankingPage /></RequiresUsernameGate>;
             default:
               return <HomePage />;
           }

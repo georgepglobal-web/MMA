@@ -9,7 +9,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// Database table interface
+// Database table interfaces
 export interface GroupMember {
   user_id: string;
   group_id: string;
@@ -17,4 +17,25 @@ export interface GroupMember {
   score: number;
   badges: string[];
   updated_at?: string;
+}
+
+export interface DbSession {
+  id: string;
+  user_id: string;
+  group_id: string;
+  date: string;
+  type: string;
+  level: string;
+  points: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AnalyticsEvent {
+  id?: string;
+  user_id?: string;
+  event_name: string;
+  event_properties?: Record<string, any>;
+  page?: string;
+  created_at?: string;
 }
