@@ -165,48 +165,63 @@ export default function Home() {
     }
   }, []);
 
-  // Fetch sessions from Supabase
-  useEffect(() => {
-    if (!userId || authLoading) return;
+  /**
+   * Fetch sessions from Supabase
+   */
+  const fetchSessions = async () => {
+    if (!userId || authLoading) {
+      console.log("[Home] Skipping fetch sessions - userId:", userId, "authLoading:", authLoading);
+      return;
+    }
 
-    const fetchSessions = async () => {
-      setSessionsLoading(true);
-      try {
-        const { data, error } = await supabase
-          .from('sessions')
-          .select('*')
-          .eq('user_id', userId)
-          .order('date', { ascending: false });
+    console.log("[Home] Fetching sessions for user:", userId);
+    setSessionsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('sessions')
+        .select('*')
+        .eq('user_id', userId)
+        .order('date', { ascending: false });
 
-        if (error) {
-          console.error('Error fetching sessions:', error);
-          return;
-        }
-
-        setSessions(data || []);
-      } catch (err) {
-        console.error('Failed to fetch sessions:', err);
-      } finally {
-        setSessionsLoading(false);
+      if (error) {
+        console.error('[Home] Error fetching sessions:', error);
+        return;
       }
-    };
 
-    fetchSessions();
-  }, [userId, authLoading]);
+      console.log('[Home] Fetched', (data || []).length, 'sessions');
+      setSessions(data || []);
+    } catch (err) {
+      console.error('[Home] Failed to fetch sessions:', err);
+    } finally {
+      setSessionsLoading(false);
+    }
+  };
 
   // Auto-migrate on first load
   useEffect(() => {
     if (migrationNeeded && !migrating && !migrationResult) {
+      console.log("[Home] Auto-migrating on first load");
       migrate();
     }
   }, [migrationNeeded, migrating, migrationResult, migrate]);
+
+  // Fetch sessions from Supabase
+  useEffect(() => {
+    console.log("[Home] useEffect - fetch sessions triggered with userId:", userId, "authLoading:", authLoading);
+    fetchSessions();
+  }, [userId, authLoading]);
 
   /**
    * Fetch and sync username from Supabase (source of truth)
    * This is called when user is authenticated to load their persisted username
    */
   const syncUsernameFromSupabase = useCallback(async (userIdToSync: string) => {
-    if (!userIdToSync) return;
+    if (!userIdToSync) {
+      console.log("[Home] Skipping syncUsernameFromSupabase - no userId");
+      return;
+    }
+
+    console.log("[Home] Syncing username from Supabase for user:", userIdToSync);
 
     try {
       const { data, error } = await supabase
@@ -217,19 +232,19 @@ export default function Home() {
         .single();
 
       if (error && error.code !== "PGRST116") {
-        console.warn("Error fetching username from Supabase:", error);
+        console.warn("[Home] Error fetching username from Supabase:", error);
         return;
       }
 
       if (data?.username) {
         setUsername(data.username);
-        console.log("Synced username from Supabase:", data.username);
+        console.log("[Home] Synced username from Supabase:", data.username);
       } else {
-        console.log("No username found in Supabase for user");
+        console.log("[Home] No username found in Supabase for user");
         setUsername(null);
       }
     } catch (e) {
-      console.error("Error syncing username from Supabase:", e);
+      console.error("[Home] Error syncing username from Supabase:", e);
       setUsername(null);
     }
   }, []);
@@ -239,7 +254,12 @@ export default function Home() {
    * Then sync username from Supabase
    */
   const initializeUserInSupabase = useCallback(async (userId: string) => {
-    if (!userId) return;
+    if (!userId) {
+      console.log("[Home] Skipping initializeUserInSupabase - no userId");
+      return;
+    }
+
+    console.log("[Home] Initializing user in Supabase:", userId);
 
     try {
       // Use upsert to ensure user exists (simpler and more reliable)
@@ -262,13 +282,14 @@ export default function Home() {
         .select();
 
       if (upsertError) {
-        console.warn("Upsert returned error (may be expected):", upsertError);
+        console.warn("[Home] Upsert returned error (may be expected):", upsertError);
       }
 
+      console.log("[Home] User initialized, syncing username");
       // Always sync username from Supabase after initialization
       await syncUsernameFromSupabase(userId);
     } catch (e) {
-      console.error("Error initializing user in Supabase:", e);
+      console.error("[Home] Error initializing user in Supabase:", e);
     }
   }, [syncUsernameFromSupabase]);
 
@@ -279,9 +300,11 @@ export default function Home() {
    */
   const upsertCurrentUserToSupabase = useCallback(async (userScore: number, userBadges: string[], userUsername: string | null) => {
     if (!userId) {
-      console.warn("Cannot upsert user: userId is missing");
+      console.warn("[Home] Cannot upsert user: userId is missing");
       return;
     }
+
+    console.log("[Home] Upserting user to Supabase - score:", userScore, "badges:", userBadges, "username:", userUsername);
 
     try {
       // Build upsert payload: only include username if it's not null
@@ -305,11 +328,13 @@ export default function Home() {
         });
 
       if (error) {
-        console.error("Error upserting user to Supabase:", error);
-        console.error("User data:", { userId, groupId: DEFAULT_GROUP_ID, username: userUsername, score: userScore });
+        console.error("[Home] Error upserting user to Supabase:", error);
+        console.error("[Home] User data:", { userId, groupId: DEFAULT_GROUP_ID, username: userUsername, score: userScore });
+      } else {
+        console.log("[Home] User upserting successful");
       }
     } catch (e) {
-      console.error("Error upserting user to Supabase:", e);
+      console.error("[Home] Error upserting user to Supabase:", e);
     }
   }, [userId]);
 
@@ -318,9 +343,11 @@ export default function Home() {
    */
   const fetchGroupMembersFromSupabase = useCallback(async () => {
     if (!userId) {
-      console.warn("Cannot fetch group members: userId is missing");
+      console.warn("[Home] Cannot fetch group members: userId is missing");
       return;
     }
+
+    console.log("[Home] Fetching group members from Supabase");
 
     try {
       const { data, error } = await supabase
@@ -330,12 +357,12 @@ export default function Home() {
         .order("score", { ascending: false });
 
       if (error) {
-        console.error("Error fetching group members:", error);
+        console.error("[Home] Error fetching group members:", error);
         return;
       }
 
       if (data) {
-        console.log(`Fetched ${data.length} group members from Supabase`);
+        console.log("[Home] Fetched", data.length, 'group members from Supabase');
         const members: MemberRanking[] = data.map((member: GroupMember) => ({
           userId: member.user_id,
           name: member.username || (member.user_id === userId ? "You" : "Anonymous Fighter"),
@@ -345,16 +372,21 @@ export default function Home() {
         }));
         setGroupMembers(members);
       } else {
-        console.warn("No group members data returned from Supabase");
+        console.warn("[Home] No group members data returned from Supabase");
       }
     } catch (e) {
-      console.error("Error fetching group members:", e);
+      console.error("[Home] Error fetching group members:", e);
     }
   }, [userId]);
 
   // Initialize user in Supabase and fetch group members on auth (wait for auth)
   useEffect(() => {
-    if (!userId || authLoading) return;
+    if (!userId || authLoading) {
+      console.log("[Home] useEffect - initialize user - skipping, userId:", userId, "authLoading:", authLoading);
+      return;
+    }
+
+    console.log("[Home] useEffect - initialize user triggered for:", userId);
 
     // Ensure user is initialized in Supabase and username is synced
     const initializeAndFetch = async () => {
@@ -372,6 +404,8 @@ export default function Home() {
    * Calculate badges from session types
    */
   const calculateBadgesFromSessions = useCallback((allSessions: DbSession[]): string[] => {
+    console.log("[Home] Calculating badges from", allSessions.length, "sessions");
+    
     const badges: string[] = [];
     const typeCounts: Record<string, number> = {};
 
@@ -381,6 +415,8 @@ export default function Home() {
 
     const uniqueTypes = Object.keys(typeCounts).length;
     const totalSessions = allSessions.length;
+
+    console.log("[Home] Badge calculation - uniqueTypes:", uniqueTypes, "totalSessions:", totalSessions, "typeCounts:", typeCounts);
 
     if (uniqueTypes >= 5 && totalSessions >= 10) {
       badges.push("Most Balanced");
@@ -404,6 +440,7 @@ export default function Home() {
       badges.push("Best Wrestler");
     }
 
+    console.log("[Home] Calculated badges:", badges);
     return badges;
   }, []);
 
@@ -416,6 +453,8 @@ export default function Home() {
     const newLevel = calculateLevelFromPoints(totalPoints);
     const progress = calculateProgressInLevel(totalPoints, newLevel);
 
+    console.log("[Home] Recalculating avatar - totalPoints:", totalPoints, "level:", newLevel, "progress:", progress);
+
     // Detect level up
     setAvatar((prev) => {
       const oldLevel = prev?.level;
@@ -427,6 +466,7 @@ export default function Home() {
 
       // If leveled up, insert a system message announcing the level up
       if (oldLevel && newLevel !== oldLevel && userId) {
+        console.log("[Home] User leveled up from", oldLevel, "to", newLevel);
         const displayName = username || "Anonymous";
         const content = `${displayName} leveled up to ${newLevel} 🎉`;
         
@@ -438,7 +478,8 @@ export default function Home() {
           .from("shoutbox_messages")
           .insert({ user_id: userId, type: "system", content })
           .then(({ error }) => {
-            if (error) console.error("Error inserting level-up system message:", error);
+            if (error) console.error("[Home] Error inserting level-up system message:", error);
+            else console.log("[Home] Level-up system message inserted successfully");
           });
       }
 
@@ -448,6 +489,7 @@ export default function Home() {
 
   // Recalculate avatar whenever sessions change
   useEffect(() => {
+    console.log("[Home] useEffect - recalculate avatar triggered with", sessions.length, 'sessions');
     recalculateAvatarFromSessions(sessions);
   }, [sessions, recalculateAvatarFromSessions]);
 
@@ -464,6 +506,8 @@ export default function Home() {
 
   // Subscribe to shoutbox messages for unread count tracking (works even when chat is closed)
   useEffect(() => {
+    console.log("[Home] Setting up shoutbox message subscription");
+    
     // Create subscription to track new messages
     const subscription = supabase
       .channel("shoutbox-messages")
@@ -475,19 +519,25 @@ export default function Home() {
           table: "shoutbox_messages",
         },
         (payload) => {
+          console.log("[Home] New message received:", payload);
+          
           // When a new message arrives
           lastMessageCountRef.current += 1;
           lastMessageInitializedRef.current = true;
 
           // Only increment unread count if chat is closed
           if (!isChatOpen) {
+            console.log("[Home] Chat is closed, incrementing unread count");
             setUnreadCount((prev) => prev + 1);
+          } else {
+            console.log("[Home] Chat is open, not incrementing unread count");
           }
         }
       )
       .subscribe();
 
     return () => {
+      console.log("[Home] Unsubscribing from shoutbox messages");
       subscription.unsubscribe();
     };
   }, [isChatOpen]);
@@ -495,14 +545,22 @@ export default function Home() {
   // Reset unread count and sync baseline when chat opens
   useEffect(() => {
     if (isChatOpen) {
+      console.log("[Home] Chat opened, resetting unread count");
       setUnreadCount(0);
       // Baseline is synced via the Shoutbox component when it mounts
+    } else {
+      console.log("[Home] Chat closed");
     }
   }, [isChatOpen]);
 
   // Upsert current user to Supabase when score/badges change (debounced)
   useEffect(() => {
-    if (!userId) return;
+    if (!userId) {
+      console.log("[Home] useEffect - upsert user - skipping, no userId");
+      return;
+    }
+
+    console.log("[Home] useEffect - upsert user triggered - score:", currentUserScore, "badges:", currentUserBadges);
 
     // Clear existing timeout
     if (syncTimeoutRef.current) {
@@ -511,6 +569,7 @@ export default function Home() {
 
     // Debounce Supabase writes (500ms delay)
     syncTimeoutRef.current = setTimeout(async () => {
+      console.log("[Home] Debounce timeout fired - executing upsert");
       await upsertCurrentUserToSupabase(currentUserScore, currentUserBadges, username);
       // Refresh group members after upsert
       fetchGroupMembersFromSupabase();
@@ -596,10 +655,17 @@ export default function Home() {
    * Add a new training session to Supabase
    */
   const addSession = async (session: Omit<DbSession, 'id' | 'user_id' | 'created_at' | 'updated_at'>) => {
-    if (!userId) return;
+    if (!userId) {
+      console.error("[Home] Cannot add session: userId is missing");
+      return;
+    }
+
+    console.log("[Home] Adding session:", session);
 
     const diversityBonus = calculateWeeklyDiversityBonus(sessions, session);
     const sessionPoints = calculateSessionPoints(session.level, diversityBonus);
+
+    console.log("[Home] Calculated diversity bonus:", diversityBonus, "session points:", sessionPoints);
 
     const newSession = {
       user_id: userId,
@@ -616,10 +682,12 @@ export default function Home() {
         .single();
 
       if (error) {
-        console.error('Error adding session:', error);
+        console.error('[Home] Error adding session:', error);
         alert('Failed to save session. Please try again.');
         return;
       }
+
+      console.log('[Home] Session added successfully:', data.id);
 
       // Update local state
       setSessions((prev) => [data, ...prev]);
@@ -631,15 +699,17 @@ export default function Home() {
       if (userId) {
         const displayName = username || "Anonymous";
         const content = `${displayName} logged ${session.type} (${session.level}) 🥋`;
+        console.log("[Home] Inserting system message:", content);
         supabase
           .from("shoutbox_messages")
           .insert({ user_id: userId, type: "system", content })
           .then(({ error }) => {
-            if (error) console.error("Error inserting session system message:", error);
+            if (error) console.error("[Home] Error inserting session system message:", error);
+            else console.log("[Home] System message inserted successfully");
           });
       }
     } catch (err) {
-      console.error('Failed to add session:', err);
+      console.error('[Home] Failed to add session:', err);
       alert('Failed to save session. Please try again.');
     }
   };
@@ -648,7 +718,12 @@ export default function Home() {
    * Delete a session from Supabase
    */
   const deleteSession = async (sessionId: string) => {
-    if (!confirm("Are you sure you want to delete this session?")) return;
+    console.log("[Home] Deleting session:", sessionId);
+
+    if (!confirm("Are you sure you want to delete this session?")) {
+      console.log("[Home] Delete cancelled by user");
+      return;
+    }
 
     const sessionToDelete = sessions.find(s => s.id === sessionId);
 
@@ -659,73 +734,42 @@ export default function Home() {
         .eq('id', sessionId);
 
       if (error) {
-        console.error('Error deleting session:', error);
+        console.error('[Home] Error deleting session:', error);
         alert('Failed to delete session. Please try again.');
         return;
       }
+
+      console.log('[Home] Session deleted successfully');
 
       // Update local state
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
 
       // Track analytics
       if (sessionToDelete) {
+        console.log("[Home] Tracking session deletion analytics for:", sessionToDelete.type);
         analytics.sessionDeleted(sessionToDelete.type);
       }
     } catch (err) {
-      console.error('Failed to delete session:', err);
+      console.error('[Home] Failed to delete session:', err);
       alert('Failed to delete session. Please try again.');
     }
   };
 
   /**
-   * Handle username set from onboarding modal
-   * Persist to Supabase as source of truth
+   * Handle onboarding completion
+   * Username is already persisted in OnboardingModal, just update local state
    */
-  const handleUsernameSet = useCallback(async (newUsername: string) => {
-    if (!newUsername || !userId) {
-      console.warn("Cannot set username: missing username or userId");
-      return;
-    }
-
-    try {
-      // First ensure user exists in Supabase
-      await initializeUserInSupabase(userId);
-      
-      // Then upsert with username (now it's set)
-      const { error } = await supabase
-        .from("group_members")
-        .upsert(
-          {
-            user_id: userId,
-            group_id: DEFAULT_GROUP_ID,
-            username: newUsername,
-            updated_at: new Date().toISOString(),
-          },
-          {
-            onConflict: "user_id,group_id",
-            ignoreDuplicates: false,
-          }
-        );
-
-      if (error) {
-        console.error("Error setting username in Supabase:", error);
-        return;
-      }
-
-      // Update local state and sync from Supabase
-      setUsername(newUsername);
-      
-      // Track analytics
-      analytics.usernameSet(newUsername);
-      
-      // Refresh group members after username update
-      setTimeout(() => {
-        fetchGroupMembersFromSupabase();
-      }, 200);
-    } catch (e) {
-      console.error("Error updating username in Supabase:", e);
-    }
-  }, [userId, initializeUserInSupabase, fetchGroupMembersFromSupabase]);
+  const handleOnboardingComplete = useCallback((newUsername: string) => {
+    console.log("[Home] Onboarding completed with username:", newUsername);
+    
+    // Update local state
+    setUsername(newUsername);
+    
+    // Refresh group members after username update
+    setTimeout(() => {
+      fetchGroupMembersFromSupabase();
+    }, 200);
+  }, [fetchGroupMembersFromSupabase]);
 
   // Components
   const RequiresUsernameGate = ({ children }: { children: React.ReactNode }) => {
@@ -1540,7 +1584,7 @@ export default function Home() {
         <OnboardingModal 
           userId={userId}
           hasUsername={!!username}
-          onUsernameSet={handleUsernameSet} 
+          onOnboardingComplete={handleOnboardingComplete} 
         />
         <ChatFAB
           unreadCount={unreadCount}
