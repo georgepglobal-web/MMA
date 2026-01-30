@@ -122,11 +122,6 @@ export default function Home() {
 
   const [sessions, setSessions] = useState<DbSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
-  const [avatar, setAvatar] = useState<Avatar>({
-    level: "Novice",
-    progress: 0,
-    cumulativePoints: 0,
-  });
   const [userId, setUserId] = useState<string>("");
   const [username, setUsername] = useState<string | null>(null);
   const [groupMembers, setGroupMembers] = useState<MemberRanking[]>([]);
@@ -401,6 +396,21 @@ export default function Home() {
   }, [userId, authLoading, initializeUserInSupabase, fetchGroupMembersFromSupabase]);
 
   /**
+   * Derive avatar from sessions (pure function, no side effects)
+   * Supabase sessions are the single source of truth
+   */
+  const deriveAvatarFromSessions = (allSessions: DbSession[]): Avatar => {
+    const totalPoints = allSessions.reduce((sum, s) => sum + (s.points || 0), 0);
+    const newLevel = calculateLevelFromPoints(totalPoints);
+    const progress = calculateProgressInLevel(totalPoints, newLevel);
+    return {
+      level: newLevel,
+      progress,
+      cumulativePoints: totalPoints,
+    };
+  };
+
+  /**
    * Calculate badges from session types
    */
   const calculateBadgesFromSessions = useCallback((allSessions: DbSession[]): string[] => {
@@ -444,58 +454,41 @@ export default function Home() {
     return badges;
   }, []);
 
-  /**
-   * Recalculate avatar from sessions (fully derived)
-   * Always creates a default "Novice" avatar if no sessions exist
-   */
-  const recalculateAvatarFromSessions = useCallback(async (allSessions: DbSession[]) => {
-    const totalPoints = allSessions.reduce((sum, s) => sum + (s.points || 0), 0);
-    const newLevel = calculateLevelFromPoints(totalPoints);
-    const progress = calculateProgressInLevel(totalPoints, newLevel);
+  // Derive avatar from sessions using pure function (single source of truth: Supabase)
+  const avatar = useMemo(() => {
+    console.log("[Home] useMemo - deriving avatar from", sessions.length, 'sessions');
+    return deriveAvatarFromSessions(sessions);
+  }, [sessions]);
 
-    console.log("[Home] Recalculating avatar - totalPoints:", totalPoints, "level:", newLevel, "progress:", progress);
-
-    // Detect level up
-    setAvatar((prev) => {
-      const oldLevel = prev?.level;
-      const next = {
-        level: newLevel,
-        progress,
-        cumulativePoints: totalPoints,
-      };
-
-      // If leveled up, insert a system message announcing the level up
-      if (oldLevel && newLevel !== oldLevel && userId) {
-        console.log("[Home] User leveled up from", oldLevel, "to", newLevel);
-        const displayName = username || "Anonymous";
-        const content = `${displayName} leveled up to ${newLevel} 🎉`;
-        
-        // Track analytics
-        analytics.avatarLevelUp(newLevel, totalPoints);
-        
-        // Fire-and-forget; best-effort system message insert
-        supabase
-          .from("shoutbox_messages")
-          .insert({ user_id: userId, type: "system", content })
-          .then(({ error }) => {
-            if (error) console.error("[Home] Error inserting level-up system message:", error);
-            else console.log("[Home] Level-up system message inserted successfully");
-          });
-      }
-
-      return next;
-    });
-  }, [userId, username]);
-
-  // Recalculate avatar whenever sessions change
-  useEffect(() => {
-    console.log("[Home] useEffect - recalculate avatar triggered with", sessions.length, 'sessions');
-    recalculateAvatarFromSessions(sessions);
-  }, [sessions, recalculateAvatarFromSessions]);
-
-  // Memoize current user badges and score
+  // Memoize current user badges and score (derived from sessions)
   const currentUserBadges = useMemo(() => calculateBadgesFromSessions(sessions), [sessions, calculateBadgesFromSessions]);
-  const currentUserScore = useMemo(() => avatar?.cumulativePoints || 0, [avatar?.cumulativePoints]);
+  const currentUserScore = useMemo(() => avatar.cumulativePoints || 0, [avatar.cumulativePoints]);
+
+  // Detect level-ups and announce via system message
+  useEffect(() => {
+    if (!userId || sessions.length === 0) return;
+
+    // Only track level changes after initial render
+    if (prevAvatarLevelRef.current !== undefined && prevAvatarLevelRef.current !== avatar.level) {
+      console.log("[Home] User leveled up from", prevAvatarLevelRef.current, "to", avatar.level);
+      const displayName = username || "Anonymous";
+      const content = `${displayName} leveled up to ${avatar.level} 🎉`;
+      
+      // Track analytics
+      analytics.avatarLevelUp(avatar.level, avatar.cumulativePoints);
+      
+      // Fire-and-forget; best-effort system message insert
+      supabase
+        .from("shoutbox_messages")
+        .insert({ user_id: userId, type: "system", content })
+        .then(({ error }) => {
+          if (error) console.error("[Home] Error inserting level-up system message:", error);
+          else console.log("[Home] Level-up system message inserted successfully");
+        });
+    }
+    
+    prevAvatarLevelRef.current = avatar.level;
+  }, [avatar.level, avatar.cumulativePoints, userId, username]);
 
   // Debounce timer for Supabase writes
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -503,6 +496,9 @@ export default function Home() {
   // Track message count and initialization state
   const lastMessageCountRef = useRef<number>(0);
   const lastMessageInitializedRef = useRef<boolean>(false);
+
+  // Track previous avatar level for level-up detection
+  const prevAvatarLevelRef = useRef<Avatar["level"] | undefined>(undefined);
 
   // Subscribe to shoutbox messages for unread count tracking (works even when chat is closed)
   useEffect(() => {
@@ -1395,7 +1391,9 @@ export default function Home() {
   const GroupRankingPage = () => {
     // Memoize sorted members to avoid recalculation during render
     const sortedMembers = useMemo(() => {
-      // Update current user's data in group members from Supabase data
+      // IMPORTANT: At render time, we intentionally override the current user's data with
+      // locally-derived values (score, badges). This gives instant UI feedback while
+      // Supabase is updated asynchronously. Supabase is the persisted source of truth.
       const updatedMembers = groupMembers.map((member) => {
         if (member.userId === userId) {
           return {
@@ -1403,7 +1401,7 @@ export default function Home() {
             score: currentUserScore,
             badges: currentUserBadges,
             isCurrentUser: true,
-            name: username || "You", // Use username from Supabase, fallback to "You"
+            name: username || "You",
           };
         }
         return member;
