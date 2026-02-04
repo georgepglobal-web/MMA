@@ -153,6 +153,8 @@ export default function Home() {
 
   // Initialize localStorage versioning (only for backward compatibility)
   useEffect(() => {
+    // Only run in the browser
+    if (typeof window === "undefined") return;
     // Check storage version for any remaining localStorage references
     const storedVersion = localStorage.getItem(STORAGE_KEYS.VERSION);
     if (storedVersion !== STORAGE_VERSION) {
@@ -399,6 +401,32 @@ export default function Home() {
    * Derive avatar from sessions (pure function, no side effects)
    * Supabase sessions are the single source of truth
    */
+  /**
+   * Calculate avatar level from points
+   */
+  const calculateLevelFromPoints = (points: number): Avatar["level"] => {
+    if (points >= LEVEL_THRESHOLDS.Elite.min) return "Elite";
+    if (points >= LEVEL_THRESHOLDS.Seasoned.min) return "Seasoned";
+    if (points >= LEVEL_THRESHOLDS.Intermediate.min) return "Intermediate";
+    return "Novice";
+  };
+
+  /**
+   * Calculate progress within level (single rounding to 25% steps)
+   */
+  const calculateProgressInLevel = (points: number, level: Avatar["level"]): number => {
+    const threshold = LEVEL_THRESHOLDS[level];
+    const range = threshold.max - threshold.min;
+
+    if (range === Infinity || level === "Elite") {
+      return points >= threshold.min ? 100 : 0;
+    }
+
+    const pointsInLevel = Math.max(0, points - threshold.min);
+    const rawProgress = Math.min(100, (pointsInLevel / range) * 100);
+    return Math.round(rawProgress / 25) * 25;
+  };
+
   const deriveAvatarFromSessions = (allSessions: DbSession[]): Avatar => {
     const totalPoints = allSessions.reduce((sum, s) => sum + (s.points || 0), 0);
     const newLevel = calculateLevelFromPoints(totalPoints);
@@ -619,33 +647,7 @@ export default function Home() {
     return basePoints * multiplier + diversityBonus;
   };
 
-  /**
-   * Calculate avatar level from points
-   */
-  const calculateLevelFromPoints = (points: number): Avatar["level"] => {
-    if (points >= LEVEL_THRESHOLDS.Elite.min) return "Elite";
-    if (points >= LEVEL_THRESHOLDS.Seasoned.min) return "Seasoned";
-    if (points >= LEVEL_THRESHOLDS.Intermediate.min) return "Intermediate";
-    return "Novice";
-  };
-
-  /**
-   * Calculate progress within level (single rounding to 25% steps)
-   */
-  const calculateProgressInLevel = (points: number, level: Avatar["level"]): number => {
-    const threshold = LEVEL_THRESHOLDS[level];
-    const range = threshold.max - threshold.min;
-
-    if (range === Infinity || level === "Elite") {
-      return points >= threshold.min ? 100 : 0;
-    }
-
-    const pointsInLevel = Math.max(0, points - threshold.min);
-    // Calculate raw progress (0-100)
-    const rawProgress = Math.min(100, (pointsInLevel / range) * 100);
-    // Round to 25% steps (0, 25, 50, 75, 100) - single rounding only
-    return Math.round(rawProgress / 25) * 25;
-  };
+  
 
   /**
    * Add a new training session to Supabase
