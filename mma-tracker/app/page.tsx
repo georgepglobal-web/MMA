@@ -76,45 +76,7 @@ const CLASS_LEVEL_MULTIPLIERS: Record<string, number> = {
 // Default group ID
 const DEFAULT_GROUP_ID = "global";
 
-/**
- * Normalize date to ISO format (YYYY-MM-DD)
- * Handles various date formats and ensures consistent storage
- */
-const normalizeDateToISO = (dateString: string): string => {
-  if (!dateString) return "";
-  
-  try {
-    // Parse as UTC to avoid timezone issues
-    const [year, month, day] = dateString.split("-");
-    if (year && month && day && year.length === 4 && month.length === 2 && day.length === 2) {
-      // Already in ISO format
-      return dateString;
-    }
-    
-    // Try parsing as Date (but we'll extract components as UTC)
-    const date = new Date(dateString + "T00:00:00Z"); // Force UTC
-    if (isNaN(date.getTime())) {
-      return dateString;
-    }
-    
-    // Convert to YYYY-MM-DD format using UTC
-    const yearStr = String(date.getUTCFullYear());
-    const monthStr = String(date.getUTCMonth() + 1).padStart(2, "0");
-    const dayStr = String(date.getUTCDate()).padStart(2, "0");
-    return `${yearStr}-${monthStr}-${dayStr}`;
-  } catch (e) {
-    // Fallback: return as-is if it's already in ISO format
-    return dateString;
-  }
-};
 
-/**
- * Parse date as UTC (YYYY-MM-DD format)
- */
-const parseDateUTC = (dateString: string): Date => {
-  const [year, month, day] = dateString.split("-").map(Number);
-  return new Date(Date.UTC(year, month - 1, day));
-};
 
 
 export default function Home() {
@@ -427,6 +389,75 @@ export default function Home() {
     return Math.round(rawProgress / 25) * 25;
   };
 
+  /**
+   * Date helpers
+   */
+  const normalizeDateToISO = (dateString: string): string => {
+    if (!dateString) return "";
+    try {
+      const [year, month, day] = dateString.split("-");
+      if (year && month && day && year.length === 4 && month.length === 2 && day.length === 2) {
+        return dateString;
+      }
+      const date = new Date(dateString + "T00:00:00Z");
+      if (isNaN(date.getTime())) return dateString;
+      const yearStr = String(date.getUTCFullYear());
+      const monthStr = String(date.getUTCMonth() + 1).padStart(2, "0");
+      const dayStr = String(date.getUTCDate()).padStart(2, "0");
+      return `${yearStr}-${monthStr}-${dayStr}`;
+    } catch (e) {
+      return dateString;
+    }
+  };
+
+  const parseDateUTC = (dateString: string): Date => {
+    const [year, month, day] = dateString.split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1, day));
+  };
+
+  /**
+   * Calculate weekly diversity bonus using UTC dates
+   */
+  const calculateWeeklyDiversityBonus = (
+    existingSessions: DbSession[],
+    newSession: Omit<DbSession, 'id' | 'user_id' | 'created_at' | 'updated_at'>
+  ): number => {
+    const sessionDate = parseDateUTC(newSession.date);
+    const weekStart = new Date(Date.UTC(
+      sessionDate.getUTCFullYear(),
+      sessionDate.getUTCMonth(),
+      sessionDate.getUTCDate() - sessionDate.getUTCDay()
+    ));
+    weekStart.setUTCHours(0, 0, 0, 0);
+
+    const weekEnd = new Date(weekStart);
+    weekEnd.setUTCDate(weekStart.getUTCDate() + 7);
+
+    const weekSessions = [
+      ...existingSessions.filter((s) => {
+        const sDate = parseDateUTC(s.date);
+        return sDate >= weekStart && sDate < weekEnd;
+      }),
+      { ...newSession, date: newSession.date } as DbSession,
+    ];
+
+    const uniqueTypes = new Set(weekSessions.map((s) => s.type));
+    const uniqueTypeCount = uniqueTypes.size;
+
+    if (uniqueTypeCount <= 1) return 0;
+    const extraTypes = uniqueTypeCount - 1;
+    return Math.min(extraTypes * 0.5, 1.5);
+  };
+
+  /**
+   * Calculate points for a session
+   */
+  const calculateSessionPoints = (classLevel: string, diversityBonus: number): number => {
+    const basePoints = 1.0;
+    const multiplier = CLASS_LEVEL_MULTIPLIERS[classLevel] || 1.0;
+    return basePoints * multiplier + diversityBonus;
+  };
+
   const deriveAvatarFromSessions = (allSessions: DbSession[]): Avatar => {
     const totalPoints = allSessions.reduce((sum, s) => sum + (s.points || 0), 0);
     const newLevel = calculateLevelFromPoints(totalPoints);
@@ -606,46 +637,7 @@ export default function Home() {
     };
   }, [userId, username, currentUserScore, currentUserBadges, upsertCurrentUserToSupabase, fetchGroupMembersFromSupabase]);
 
-  /**
-   * Calculate weekly diversity bonus using UTC dates
-   */
-  const calculateWeeklyDiversityBonus = (existingSessions: DbSession[], newSession: Omit<DbSession, 'id' | 'user_id' | 'created_at' | 'updated_at'>): number => {
-    // Parse dates as UTC to avoid timezone issues
-    const sessionDate = parseDateUTC(newSession.date);
-    const weekStart = new Date(Date.UTC(
-      sessionDate.getUTCFullYear(),
-      sessionDate.getUTCMonth(),
-      sessionDate.getUTCDate() - sessionDate.getUTCDay()
-    ));
-    weekStart.setUTCHours(0, 0, 0, 0);
-
-    const weekEnd = new Date(weekStart);
-    weekEnd.setUTCDate(weekStart.getUTCDate() + 7);
-
-    const weekSessions = [
-      ...existingSessions.filter((s) => {
-        const sDate = parseDateUTC(s.date);
-        return sDate >= weekStart && sDate < weekEnd;
-      }),
-      { ...newSession, date: newSession.date } as DbSession,
-    ];
-
-    const uniqueTypes = new Set(weekSessions.map((s) => s.type));
-    const uniqueTypeCount = uniqueTypes.size;
-
-    if (uniqueTypeCount <= 1) return 0;
-    const extraTypes = uniqueTypeCount - 1;
-    return Math.min(extraTypes * 0.5, 1.5);
-  };
-
-  /**
-   * Calculate points for a session
-   */
-  const calculateSessionPoints = (classLevel: string, diversityBonus: number): number => {
-    const basePoints = 1.0;
-    const multiplier = CLASS_LEVEL_MULTIPLIERS[classLevel] || 1.0;
-    return basePoints * multiplier + diversityBonus;
-  };
+  
 
   
 
