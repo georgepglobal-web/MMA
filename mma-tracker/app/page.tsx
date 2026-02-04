@@ -254,39 +254,36 @@ export default function Home() {
       return;
     }
 
-    console.log("[Home] Initializing user in Supabase:", userId);
+    console.log("[Home] Checking for existing group_members entry for user:", userId);
 
     try {
-      // Use upsert to ensure user exists (simpler and more reliable)
-      const { error: upsertError } = await supabase
+      // Only check whether a group_members row exists for this user.
+      // Do NOT create new entries here — OnboardingModal will create the
+      // row when the user sets a username.
+      const { data, error } = await supabase
         .from("group_members")
-        .upsert(
-          {
-            user_id: userId,
-            group_id: DEFAULT_GROUP_ID,
-            username: null,
-            score: 0,
-            badges: [],
-            updated_at: new Date().toISOString(),
-          },
-          {
-            onConflict: "user_id,group_id",
-            ignoreDuplicates: false, // Update if exists
-          }
-        )
-        .select();
+        .select("username")
+        .eq("user_id", userId)
+        .eq("group_id", DEFAULT_GROUP_ID)
+        .limit(1)
+        .single();
 
-      if (upsertError) {
-        console.warn("[Home] Upsert returned error (may be expected):", upsertError);
+      if (error) {
+        // If the row doesn't exist `error` may be returned; just log and return
+        console.log("[Home] No existing group_members row found (or error):", error?.message ?? error);
+        return;
       }
 
-      console.log("[Home] User initialized, syncing username");
-      // Always sync username from Supabase after initialization
-      await syncUsernameFromSupabase(userId);
+      if (data?.username) {
+        console.log("[Home] Existing group_members found, syncing username");
+        setUsername(data.username);
+      } else {
+        console.log("[Home] Existing group_members has no username; not creating one here");
+      }
     } catch (e) {
-      console.error("[Home] Error initializing user in Supabase:", e);
+      console.error("[Home] Error checking group_members in Supabase:", e);
     }
-  }, [syncUsernameFromSupabase]);
+  }, [setUsername]);
 
   /**
    * Upsert current user to Supabase group members (with debouncing)
@@ -299,27 +296,30 @@ export default function Home() {
       return;
     }
 
+    // Only upsert when a valid username is present. Prevent anonymous/empty
+    // username rows from being created by skipping the upsert entirely.
+    if (userUsername === null) {
+      console.log("[Home] Skipping upsert because userUsername is null");
+      return;
+    }
+
     console.log("[Home] Upserting user to Supabase - score:", userScore, "badges:", userBadges, "username:", userUsername);
 
     try {
-      // Build upsert payload: only include username if it's not null
       const upsertPayload: any = {
         user_id: userId,
         group_id: DEFAULT_GROUP_ID,
+        username: userUsername,
         score: userScore,
         badges: userBadges,
         updated_at: new Date().toISOString(),
       };
 
-      if (userUsername !== null) {
-        upsertPayload.username = userUsername;
-      }
-
       const { error } = await supabase
         .from("group_members")
         .upsert(upsertPayload, {
           onConflict: "user_id,group_id",
-          ignoreDuplicates: false, // Always update if exists
+          ignoreDuplicates: false,
         });
 
       if (error) {

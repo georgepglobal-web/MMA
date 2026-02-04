@@ -120,39 +120,32 @@ export default function OnboardingModal({ userId, hasUsername, onOnboardingCompl
   };
 
   /**
-   * Initialize user in Supabase (ensure they exist in group_members)
+   * Check whether a group_members row exists for the user.
+   * Do NOT create a new row here — the onboarding flow will create the
+   * record when the user sets a username.
    */
   const initializeUserInSupabase = async (userIdToInit: string) => {
     if (!userIdToInit) return;
 
-    console.log("[OnboardingModal] Initializing user in Supabase:", userIdToInit);
+    console.log("[OnboardingModal] Checking for existing group_members entry for user:", userIdToInit);
 
     try {
-      const { error: upsertError } = await supabase
+      const { data, error } = await supabase
         .from("group_members")
-        .upsert(
-          {
-            user_id: userIdToInit,
-            group_id: DEFAULT_GROUP_ID,
-            username: null,
-            score: 0,
-            badges: [],
-            updated_at: new Date().toISOString(),
-          },
-          {
-            onConflict: "user_id,group_id",
-            ignoreDuplicates: false,
-          }
-        )
-        .select();
+        .select("username")
+        .eq("user_id", userIdToInit)
+        .eq("group_id", DEFAULT_GROUP_ID)
+        .limit(1)
+        .single();
 
-      if (upsertError) {
-        console.warn("[OnboardingModal] Upsert returned error (may be expected):", upsertError);
+      if (error) {
+        console.log("[OnboardingModal] No existing group_members row found (or error):", error?.message ?? error);
+        return;
       }
 
-      console.log("[OnboardingModal] User initialization complete");
+      console.log("[OnboardingModal] Found existing group_members row for user; username:", data?.username ?? null);
     } catch (e) {
-      console.error("[OnboardingModal] Error initializing user in Supabase:", e);
+      console.error("[OnboardingModal] Error checking group_members in Supabase:", e);
     }
   };
 
