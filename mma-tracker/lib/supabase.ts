@@ -35,7 +35,7 @@ export interface AnalyticsEvent {
   id?: string;
   user_id?: string;
   event_name: string;
-  event_properties?: Record<string, any>;
+  event_properties?: Record<string, unknown>;
   page?: string;
   created_at?: string;
 }

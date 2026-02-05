@@ -313,7 +313,7 @@ export default function OnboardingModal({ userId, hasUsername, onOnboardingCompl
             <div>
               <p className="text-white font-semibold mb-1">Log Training Sessions</p>
               <p className="text-white/60 text-sm">
-                Click "Log Session" to record your workouts. Choose your training type and class level.
+                Click &quot;Log Session&quot; to record your workouts. Choose your training type and class level.
               </p>
             </div>
           </div>
@@ -337,7 +337,7 @@ export default function OnboardingModal({ userId, hasUsername, onOnboardingCompl
             <div>
               <p className="text-white font-semibold mb-1">Track Your Progress</p>
               <p className="text-white/60 text-sm">
-                View your history, avatar evolution, and group rankings to see how you're progressing.
+                View your history, avatar evolution, and group rankings to see how you&apos;re progressing.
               </p>
             </div>
           </div>

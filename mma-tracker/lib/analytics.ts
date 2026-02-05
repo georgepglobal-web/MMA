@@ -13,7 +13,7 @@ class Analytics {
     this.currentPage = page;
   }
 
-  private async track(eventName: string, properties?: Record<string, any>) {
+  private async track(eventName: string, properties?: Record<string, unknown>) {
     try {
       const payload = {
         user_id: this.userId || null,
@@ -38,8 +38,8 @@ class Analytics {
       }
 
       console.log('[Analytics] Event tracked successfully:', eventName);
-    } catch (error) {
-      console.error('[Analytics] Exception:', error);
+    } catch (err) {
+      console.error('[Analytics] Exception:', err);
     }
   }
 

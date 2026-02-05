@@ -26,12 +26,34 @@ export default function AuthGate({
         }
 
         if (session?.user) {
-          // Reuse existing session
-          console.log("Using existing Supabase auth session:", session.user.id);
-          setUserId(session.user.id);
+          // Validate session by attempting to fetch the user
+          try {
+            const { data: { user }, error: userError } = await supabase.auth.getUser();
+
+            if (userError || !user) {
+              // If the user no longer exists in auth (deleted), sign them out
+              console.warn("User validation failed; signing out:", userError);
+              await supabase.auth.signOut();
+              setUserId("");
+            } else {
+              // Session and user are valid
+              console.log("Using existing Supabase auth session:", session.user.id);
+              setUserId(session.user.id);
+            }
+          } catch (validationErr) {
+            console.error("Error validating user:", validationErr);
+            await supabase.auth.signOut();
+            setUserId("");
+          }
         }
       } catch (e) {
         console.error("Error initializing authentication:", e);
+        try {
+          await supabase.auth.signOut();
+        } catch {
+          // ignore
+        }
+        setUserId("");
       } finally {
         setAuthLoading(false);
       }

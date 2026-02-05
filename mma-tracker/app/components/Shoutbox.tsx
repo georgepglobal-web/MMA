@@ -59,19 +59,19 @@ export default function Shoutbox({ userId, username, onNewMessages }: ShoutboxPr
         return;
       }
 
-      const msgs: ShoutboxMessage[] = (data as any) || [];
+      const msgs = (data ?? []) as ShoutboxMessage[];
       const userIds = Array.from(new Set(msgs.map((m) => m.user_id).filter(Boolean)));
 
-      let usernameMap: Record<string, string> = {};
+      const usernameMap: Record<string, string> = {};
       if (userIds.length > 0) {
         const { data: gm, error: gmErr } = await supabase
-          .from("group_members")
-          .select("user_id,username")
-          .in("user_id", userIds as string[]);
+          .from('group_members')
+          .select('user_id,username')
+          .in('user_id', userIds as string[]);
 
         if (!gmErr && gm) {
-          (gm as any[]).forEach((g) => {
-            if (g.user_id) usernameMap[g.user_id] = g.username;
+          (gm as { user_id: string; username: string | null }[]).forEach((g) => {
+            if (g.user_id) usernameMap[g.user_id] = g.username || '';
           });
         }
       }
@@ -79,7 +79,7 @@ export default function Shoutbox({ userId, username, onNewMessages }: ShoutboxPr
       const mapped: ShoutboxMessageWithName[] = msgs.map((m) => ({
         ...m,
         displayName:
-          usernameMap[m.user_id] || (m.user_id === userId ? username || "You" : "Anonymous"),
+          usernameMap[m.user_id] || (m.user_id === userId ? username || 'You' : 'Anonymous'),
       }));
 
       setMessages(mapped);

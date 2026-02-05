@@ -83,13 +83,23 @@ export default function Home() {
   const { currentPage: page, setCurrentPage: setPage } = usePage();
 
   const [sessions, setSessions] = useState<DbSession[]>([]);
-  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [_sessionsLoading, setSessionsLoading] = useState(true);
   const [userId, setUserId] = useState<string>("");
   const [username, setUsername] = useState<string | null>(null);
   const [groupMembers, setGroupMembers] = useState<MemberRanking[]>([]);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
   const [unreadCount, setUnreadCount] = useState<number>(0);
+
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.error("Error signing out:", e);
+    } finally {
+      if (typeof window !== "undefined") window.location.reload();
+    }
+  };
 
   // Migration hook
   const { 
@@ -270,7 +280,7 @@ export default function Home() {
     console.log("[Home] Upserting user to Supabase - score:", userScore, "badges:", userBadges, "username:", userUsername);
 
     try {
-      const upsertPayload: any = {
+      const upsertPayload: Partial<import('../lib/supabase').GroupMember> = {
         user_id: userId,
         group_id: DEFAULT_GROUP_ID,
         username: userUsername,
@@ -810,7 +820,7 @@ export default function Home() {
             <span>FightMate</span>
           </div>
 
-          <div>
+          <div className="flex items-center gap-2">
             {page !== "home" && (
               <button
                 onClick={() => setPage("home")}
@@ -820,6 +830,14 @@ export default function Home() {
                 Back
               </button>
             )}
+
+            <button
+              onClick={handleSignOut}
+              className="text-white/80 hover:text-white bg-white/0 px-3 py-1 rounded-md border border-white/10"
+              aria-label="Sign out"
+            >
+              Sign Out
+            </button>
           </div>
         </div>
       </header>

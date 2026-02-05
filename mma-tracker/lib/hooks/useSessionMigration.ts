@@ -46,17 +46,28 @@ export function useSessionMigration(userId: string | null) {
         return;
       }
 
-      const localSessions = JSON.parse(localSessionsStr);
+      const localSessions = JSON.parse(localSessionsStr) as unknown[];
+
+      type LocalSession = {
+        groupId?: string;
+        date: string;
+        type: string;
+        level?: string;
+        points?: number;
+      };
 
       // Transform to database format
-      const sessionsToInsert = localSessions.map((s: any) => ({
-        user_id: userId,
-        group_id: s.groupId || 'global',
-        date: s.date,
-        type: s.type,
-        level: s.level,
-        points: s.points || 0,
-      }));
+      const sessionsToInsert = localSessions.map((s) => {
+        const item = s as LocalSession;
+        return {
+          user_id: userId,
+          group_id: item.groupId || 'global',
+          date: item.date,
+          type: item.type,
+          level: item.level || 'Unknown',
+          points: item.points || 0,
+        };
+      });
 
       // Batch insert (Supabase handles duplicates with upsert)
       const { data, error } = await supabase
